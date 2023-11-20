@@ -1,0 +1,41 @@
+class Hospital {
+     name: String
+}
+
+class Person {
+     name: String,
+     numTeeth: Integer,
+     age: Integer,
+}
+
+class Doctor is Person
+class Patient is Person
+class Nurse is Person
+class Room
+
+enum Colour {
+     Blue,
+     Green,
+     Pink
+}
+
+class Kit {
+     mess_allowance: Real, // Yes I know using floats for money is bad
+     gown_colour: Colour
+}
+
+class Surgery {
+     outcome: Boolean
+}
+
+Patient has nurses: *Nurse, Nurse has patients: *Patient
+
+Hospital has doctors: *Doctor, Doctor has Hospital
+Hospital has patients: *Patient, Patient has hospital: Hospital
+Doctor has patients: *Patient, Patient has doctor: Doctor
+Doctor has normal_surgeries: *Surgery, Surgery has normal_doctors: *Doctor
+Surgery has head_surgeon: Doctor, Doctor has lead_surgeries: *Surgery
+// Calculated OCL property: Doctor::surgeries = self.lead_surgeries->union(self.normal_surgeries)
+Patient has emergency_contact: Person, Person has dependents: *Patient
+Patient has Kit // Implies that Kit has patient: Patient
+Patient has Room, Room has patient: Patient

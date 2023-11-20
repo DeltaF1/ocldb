@@ -1,0 +1,19 @@
+schema               =  {
+    SOI ~ (classdef | enumdef | relationship)* ~ EOI
+}
+enumdef              =  { "enum" ~ identifier ~ "{" ~ enumdeflist ~ "}" }
+enumdeflist          =  { (identifier ~ ("," ~ identifier)*) ~ ","? }
+classdef             =  { "class" ~ identifier ~ ("is" ~ identifier)? ~ ("{" ~ fieldlist? ~ "}")? }
+identifier           = @{ ASCII_ALPHA ~ ((ASCII_ALPHANUMERIC | "_")*) }
+fieldlist            =  { (fielddef ~ ("," ~ fielddef)*) ~ ","? }
+fielddef             =  { identifier ~ ":" ~ primitivetype }
+primitivetype        =  { primitive | "*" ~ primitive | primitive ~ "?" }
+primitive            =  { "String" | "Integer" | "Real" | "Boolean" | identifier }
+optionalrelationship =  { identifier ~ "?" }
+manyrelationship     =  { "*" ~ identifier }
+relationshiptype     =  { manyrelationship | optionalrelationship | identifier }
+relationshiphalf     =  { identifier ~ "has" ~ identifier ~ (":" ~ relationshiptype)? }
+relationship         =  { relationshiphalf ~ ("," ~ relationshiphalf)? }
+
+COMMENT    = _{ "//" ~ (!NEWLINE ~ ANY)* ~ NEWLINE }
+WHITESPACE = _{ " " | NEWLINE }
