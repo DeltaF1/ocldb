@@ -10,7 +10,7 @@ As an example, consider a system where Employee records contain the age of an em
 
 ```
 class Employee {
-  int Age;
+  int age;
   Employee manager;
   Team team;
   float Salary;
