@@ -1103,7 +1103,7 @@ fn main() {
 
     println!("OCL text: \ncontext self: <some external value>\nself.hospital.doctors->size()");
     let (ocl, mut context) = query_parser::parse_full_query(
-        "bikeshed self: Doctor in: self.hospital.doctors->size()",
+        "params self: Doctor in: self.hospital.doctors->size()",
         &model,
     );
     println!("OCL tree: {ocl:?}");
@@ -1114,7 +1114,7 @@ fn main() {
 
     println!("query: self.hospital.doctors->select(o: Person | o.age < self.age)");
     let (age_ocl, age_context) = query_parser::parse_full_query(
-        "bikeshed self: Patient in: 
+        "parameters self: Patient in:
         self.hospital.doctors->select(o: Person | o.age < self.age)
     ",
         &model,

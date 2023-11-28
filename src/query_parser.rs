@@ -153,7 +153,7 @@ pub(crate) fn parse_full_query<'a>(text: &'a str, model: &Model) -> (OclNode, Pa
 
     let tok = text.peek_next_token().expect("Empty query");
 
-    if tok == "bikeshed" {
+    if tok.starts_with("param") {
         drop(text.next_token());
         loop {
             let name = text.next_token();
@@ -282,7 +282,7 @@ fn parse_base_case(
             let mut float = name;
             float.push_str(&text.next_token());
             float.push_str(&text.next_token());
-            let float: f64 = float.parse().unwrap();
+            let float: f64 = float.parse().expect("Invalid float literal");
             OclNode::Literal(OclLiteral::Real(float))
         } else {
             let integer: i64 = name.parse().unwrap();
