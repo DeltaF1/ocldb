@@ -1,8 +1,8 @@
-use std::{collections::HashMap, env::vars, iter::Peekable, str::Chars};
+use std::{collections::HashMap, iter::Peekable, str::Chars};
 
 use crate::{
-    model::Model, typecheck, ClassName, FieldName, OclBool, OclContext, OclNode, OclType,
-    Primitive, Resolution, SqlIdentifier,
+    model::Model, typecheck, ClassName, FieldName, OclBool, OclNode, OclType, Primitive,
+    SqlIdentifier,
 };
 
 // TODO: Cow
@@ -82,9 +82,82 @@ struct ParseContext {
     iterator_vars: Vec<HashMap<String, OclType>>,
 }
 
+enum Resolution {
+    IterVar(OclType),
+    ContextVar(OclType),
+    NotFound,
+}
+
+impl Resolution {
+    fn unwrap_iter(self) -> OclType {
+        match self {
+            Resolution::IterVar(c) => c,
+            Resolution::ContextVar(_) => {
+                panic!("Iter variable not found but context var with same name was found")
+            }
+            Resolution::NotFound => panic!("Iter variable not found"),
+        }
+    }
+
+    fn unwrap_context(self) -> OclType {
+        match self {
+            Resolution::ContextVar(c) => c,
+            Resolution::IterVar(_) => {
+                panic!("Context variable not found but iter var with same name was found")
+            }
+            Resolution::NotFound => panic!("Context variable not found"),
+        }
+    }
+}
+
+impl ParseContext {
+    fn with_parameters(params: HashMap<String, OclType>) -> Self {
+        ParseContext {
+            parameters: params,
+            ..ParseContext::default()
+        }
+    }
+
+    fn resolve(&self, name: &str) -> Resolution {
+        for iter in self.iterator_vars.iter().rev() {
+            if let Some(t) = iter.get(name) {
+                return Resolution::IterVar(t.clone());
+            }
+        }
+
+        if let Some(c) = self.parameters.get(name) {
+            Resolution::ContextVar(c.clone())
+        } else {
+            Resolution::NotFound
+        }
+    }
+
+    fn resolve_mut(&mut self, name: &str) -> Option<&mut OclType> {
+        for iter in self.iterator_vars.iter_mut().rev() {
+            if let Some(t) = iter.get_mut(name) {
+                return Some(t);
+            }
+        }
+
+        if let Some(c) = self.parameters.get_mut(name) {
+            Some(c)
+        } else {
+            None
+        }
+    }
+
+    fn push_iter(&mut self, hm: HashMap<String, OclType>) {
+        self.iterator_vars.push(hm);
+    }
+
+    fn pop_iter(&mut self) {
+        self.iterator_vars.pop();
+    }
+}
+
 fn parse_iter_var_list(
     text: &mut StringIter<impl Iterator<Item = char>>,
-) -> HashMap<String, (OclType, Option<SqlIdentifier>)> {
+) -> HashMap<String, OclType> {
     let mut map = HashMap::new();
     while true {
         let name = text.next_token();
@@ -96,7 +169,7 @@ fn parse_iter_var_list(
 
         let typ = parse_type(text.next_token().as_str());
 
-        map.insert(name, (typ, None));
+        map.insert(name, typ);
 
         if text.peek_next_token().expect("Unexpected EOF") == "," {
             drop(text.next_token())
@@ -115,10 +188,12 @@ fn parse_type(text: &str, /* , model: &Model TODO: validate that the class exist
     }
 }
 
-pub(crate) fn parse_full_query<'a>(text: &'a str, model: &Model) -> (OclNode, OclContext) {
+type Parameters = HashMap<String, OclType>;
+
+pub(crate) fn parse_full_query<'a>(text: &'a str, model: &Model) -> (OclNode, Parameters) {
     type T<'a> = Chars<'a>;
     let mut text = StringIter::<T>::from_str(text);
-    let mut ctx = OclContext::default();
+    let mut ctx = ParseContext::default();
 
     let mut tok = text.peek_next_token().expect("Empty query");
 
@@ -133,8 +208,7 @@ pub(crate) fn parse_full_query<'a>(text: &'a str, model: &Model) -> (OclNode, Oc
 
             let typ = text.next_token();
 
-            ctx.parameters
-                .insert(name, (parse_type(typ.as_str()), None));
+            ctx.parameters.insert(name, (parse_type(typ.as_str())));
 
             if text
                 .peek_next_token()
@@ -146,13 +220,16 @@ pub(crate) fn parse_full_query<'a>(text: &'a str, model: &Model) -> (OclNode, Oc
         }
     }
 
-    (parse_expr(&mut text, None, &mut ctx, model), ctx)
+    (
+        parse_expr(&mut text, None, &mut ctx, model),
+        ctx.parameters.clone(),
+    )
 }
 
 fn parse_expr(
     text: &mut StringIter<impl Iterator<Item = char>>,
     stop_token: Option<Token>,
-    ctx: &mut OclContext,
+    ctx: &mut ParseContext,
     model: &Model,
 ) -> OclNode {
     let mut cur_node = parse_base_case(text, ctx, model);
@@ -165,7 +242,7 @@ fn parse_expr(
         let next = next.expect("Unexpected EOF in expression");
         match next.as_str() {
             "." => {
-                let typ = typecheck(&cur_node, ctx, model);
+                let typ = typecheck(&cur_node, model);
                 let field_name = FieldName(text.next_token());
                 match typ {
                     OclType::Primitive(_) => todo!("Can primitive objects have navigations?"),
@@ -193,15 +270,12 @@ fn parse_expr(
                     // FIXME: Non statically known bool exprs can maybe exist? e.g. object.bool_field
                     let select_clause = parse_expr(text, Some(")".into()), ctx, model);
                     assert!(matches!(
-                        typecheck(&select_clause, &ctx, model),
+                        typecheck(&select_clause, model),
                         OclType::Primitive(Primitive::Boolean)
                     ));
                     let vars = ctx.iterator_vars.pop();
                     cur_node = OclNode::Select(
-                        vars.unwrap()
-                            .iter()
-                            .map(|(k, (v, _))| (k.clone(), v.clone()))
-                            .collect(),
+                        vars.unwrap().clone(),
                         Box::new(cur_node),
                         Box::new(select_clause),
                     );
@@ -235,7 +309,7 @@ fn parse_expr(
 
 fn parse_base_case(
     text: &mut StringIter<impl Iterator<Item = char>>,
-    ctx: &mut OclContext,
+    ctx: &mut ParseContext,
     model: &Model,
 ) -> OclNode {
     let name = text.next_token();
@@ -244,8 +318,8 @@ fn parse_base_case(
         return parse_expr(text, Some(")".to_string()), ctx, model);
     } else {
         match ctx.resolve(&name) {
-            Resolution::IterVar(_) => OclNode::IterVariable(name),
-            Resolution::ContextVar(_) => OclNode::ContextVariable(name),
+            Resolution::IterVar(c) => OclNode::IterVariable(name, c),
+            Resolution::ContextVar(c) => OclNode::ContextVariable(name, c),
             Resolution::NotFound => {
                 let class_name = name.as_str().into();
                 if model.classes.contains_key(&class_name) {

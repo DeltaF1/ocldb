@@ -647,8 +647,8 @@ mod SqlTree {
 
     fn is_base(node: &OclNode) -> bool {
         match node {
-            OclNode::IterVariable(_) => true,
-            OclNode::ContextVariable(_) => true,
+            OclNode::IterVariable(_, _) => true,
+            OclNode::ContextVariable(_, _) => true,
             OclNode::AllInstances(_) => true,
             OclNode::Navigate(_, _) => todo!(),
             OclNode::PrimitiveField(_, _) => todo!(),
@@ -659,6 +659,7 @@ mod SqlTree {
         }
     }
 
+    #[derive(Default)]
     struct QueryState {
         aliases: HashMap<String, usize>,
         bindings: HashMap<
@@ -674,14 +675,17 @@ mod SqlTree {
     // TODO: Just pass in an immutable list of context arg types
     pub(crate) fn ocl_to_sql(
         ocl: &OclNode,
-        mut context: OclContext,
+        parameters: &HashMap<String, OclType>,
         model: &crate::model::Model,
     ) -> Query {
+        // TODO: Return a Query and a ParameterInfo struct to support non sqlite parameters
         let mut aliases = Aliases::default();
+        let mut context = OclContext::with_parameters(parameters);
+        let mut state: QueryState = Default::default();
         // match the top-level node to determine output
         match ocl {
-            OclNode::IterVariable(_) => panic!("Invalid OCL query"),
-            OclNode::ContextVariable(varname) => {
+            OclNode::IterVariable(_, _) => panic!("Invalid OCL query"),
+            OclNode::ContextVariable(varname, _) => {
                 let (typ, _) = context.resolve(varname).unwrap_context();
 
                 match typ {
@@ -706,7 +710,7 @@ mod SqlTree {
                 let in_progress = InProgressQuery::default();
                 let (in_progress, table) =
                     build_query(ocl, model, in_progress, &mut context, &mut aliases);
-                let OclType::Class(class) = typecheck(node, &context, model) else {
+                let OclType::Class(class) = typecheck(node, model) else {
                     panic!("Tried to get primitive field of non-class object")
                 };
                 let columnspec = canonicalize::column_name(class, field);
@@ -750,13 +754,13 @@ mod SqlTree {
         aliases: &mut Aliases,
     ) -> (InProgressQuery, TableAlias) {
         match ocl {
-            OclNode::IterVariable(name) => {
+            OclNode::IterVariable(name, _) => {
                 let var = context.resolve(name);
                 (sql, var.unwrap_iter().1.unwrap())
 
                 // if the variable is an upcast, add a join onto the base class
             }
-            OclNode::ContextVariable(name) => {
+            OclNode::ContextVariable(name, _) => {
                 let Resolution::ContextVar((typ, binding)) = context.resolve(name) else {
                     panic!("Unknown variable")
                 };
@@ -805,7 +809,7 @@ mod SqlTree {
                 }
 
                 let mut vars_with_aliases = HashMap::new();
-                let output_typ = typecheck(node, context, model);
+                let output_typ = typecheck(node, model);
                 for (varname, vartype) in iter_vars {
                     if vartype != &output_typ {
                         let output_class = output_typ.class_name();
@@ -838,7 +842,7 @@ mod SqlTree {
                                 let typ: OclType;
                                 let ret_sql;
 
-                                let alias = if let OclNode::IterVariable(varname) = &**node {
+                                let alias = if let OclNode::IterVariable(varname, _) = &**node {
                                     let (ty, alias) = context.resolve(varname).unwrap_iter();
                                     typ = ty;
                                     ret_sql = sql;
@@ -847,7 +851,7 @@ mod SqlTree {
                                     let alias;
                                     (ret_sql, alias) =
                                         build_query(node, model, sql, context, aliases);
-                                    typ = typecheck(node, context, model);
+                                    typ = typecheck(node, model);
                                     alias
                                 };
 
@@ -866,7 +870,7 @@ mod SqlTree {
                                 let typ: OclType;
                                 let ret_sql;
                                 // TODO: If node == IterVar, don't build_query just reuse the alias
-                                let alias = if let OclNode::IterVariable(varname) = &**node {
+                                let alias = if let OclNode::IterVariable(varname, _) = &**node {
                                     let (ty, alias) = context.resolve(varname).unwrap_iter();
                                     typ = ty;
                                     ret_sql = lhs;
@@ -875,7 +879,7 @@ mod SqlTree {
                                     let alias;
                                     (ret_sql, alias) =
                                         build_query(node, model, lhs, context, aliases);
-                                    typ = typecheck(node, context, model);
+                                    typ = typecheck(node, model);
                                     alias
                                 };
 
@@ -897,7 +901,7 @@ mod SqlTree {
                     }
                 } else {
                     assert!(matches!(
-                        typecheck(condition, context, model),
+                        typecheck(condition, model),
                         OclType::Primitive(Primitive::Boolean)
                     ));
                     todo!("We need to do some magic joining and then WHERE result.bool_field = 1");
@@ -931,7 +935,7 @@ mod SqlTree {
                 // ... <---> this table
 
                 let (mut sql, prev_alias) = build_query(node, model, sql, context, aliases);
-                let prev_type = typecheck(node, context, model);
+                let prev_type = typecheck(node, model);
                 let OclType::Class(prev_type) = prev_type else {
                     panic!("Tried to navigate on a primitive")
                 };
@@ -1228,8 +1232,8 @@ type EnumName = String;
 type MemberName = String;
 #[derive(Debug)]
 enum OclNode {
-    IterVariable(String),                    // -> Output::Object
-    ContextVariable(String),                 // -> Output::Object
+    IterVariable(String, OclType),           // -> Output::Object
+    ContextVariable(String, OclType),        // -> Output::Object
     AllInstances(ClassName),                 // -> Output::Bag
     Navigate(Box<OclNode>, FieldName),       // -> Output::Object | Output::Bag
     PrimitiveField(Box<OclNode>, FieldName), // -> Output::Field
@@ -1239,14 +1243,14 @@ enum OclNode {
     EnumMember(EnumName, MemberName),        // Output::Constant
 }
 
-fn typecheck(ocl: &OclNode, ctx: &OclContext, model: &model::Model) -> OclType {
+fn typecheck(ocl: &OclNode, model: &model::Model) -> OclType {
     match ocl {
         OclNode::EnumMember(enum_name, _) => OclType::Primitive(Primitive::Enum(enum_name.clone())),
-        OclNode::IterVariable(name) => ctx.resolve(name).unwrap_iter().0,
-        OclNode::ContextVariable(name) => ctx.resolve(name).unwrap_context().0,
+        OclNode::IterVariable(_, typ) => typ.clone(),
+        OclNode::ContextVariable(_, typ) => typ.clone(),
         OclNode::AllInstances(name) => OclType::Class(name.clone()),
         OclNode::Navigate(node, nav) => {
-            let typ = typecheck(node, ctx, model);
+            let typ = typecheck(node, model);
 
             match typ {
                 OclType::Primitive(_) => todo!("Figure out if primitives have navigations"),
@@ -1257,7 +1261,7 @@ fn typecheck(ocl: &OclNode, ctx: &OclContext, model: &model::Model) -> OclType {
             }
         }
         OclNode::PrimitiveField(node, nav) => {
-            let typ = typecheck(node, ctx, model);
+            let typ = typecheck(node, model);
 
             match typ {
                 OclType::Primitive(_) => panic!("Can't get the field of a primitive"),
@@ -1270,7 +1274,7 @@ fn typecheck(ocl: &OclNode, ctx: &OclContext, model: &model::Model) -> OclType {
                 }
             }
         }
-        OclNode::Select(vars, node, _) => typecheck(node, todo!("ctx with added vars"), model),
+        OclNode::Select(vars, node, _) => typecheck(node, model),
         OclNode::Count(_) => OclType::Primitive(Primitive::Integer),
         OclNode::Bool(_) => OclType::Primitive(Primitive::Boolean),
     }
@@ -1315,9 +1319,13 @@ impl Resolution {
 }
 
 impl OclContext {
-    fn with_context(map: HashMap<String, Context>) -> Self {
+    fn with_parameters(map: &HashMap<String, OclType>) -> Self {
+        let params = map
+            .iter()
+            .map(|(name, typ)| (name.clone(), (typ.clone(), None)))
+            .collect();
         OclContext {
-            parameters: map,
+            parameters: params,
             ..OclContext::default()
         }
     }
@@ -1379,14 +1387,14 @@ fn build_query(
     context: &mut OclContext,
 ) -> (TableAlias, ClassName) {
     match ocl {
-        OclNode::IterVariable(name) => {
+        OclNode::IterVariable(name, _) => {
             todo!(
                 "keep track of the alias of the currently iterating collection
 
             if the variable is an upcast, add a join onto the base class"
             )
         }
-        OclNode::ContextVariable(name) => {
+        OclNode::ContextVariable(name, _) => {
             let Resolution::ContextVar((typ, _)) = context.resolve(name) else {
                 panic!("Unknown variable")
             };
@@ -1440,7 +1448,7 @@ fn build_query(
                 }
             } else {
                 assert!(matches!(
-                    typecheck(condition, context, model),
+                    typecheck(condition, model),
                     OclType::Primitive(Primitive::Boolean)
                 ));
                 todo!("We need to do some magic joining and then WHERE result.bool_field = 1");
@@ -1525,7 +1533,7 @@ fn main() {
     );
     println!("OCL tree: {ocl:?}");
 
-    let sql = SqlTree::ocl_to_sql(&ocl, context, &model);
+    let sql = SqlTree::ocl_to_sql(&ocl, &context, &model);
 
     println!("Generated query: {}", sql);
 
@@ -1573,7 +1581,7 @@ fn main() {
         Patient0.id = ?self AND
         Doctor1.age < Patient0.age;
      */
-    let sql = SqlTree::ocl_to_sql(&age_ocl, age_context, &model);
+    let sql = SqlTree::ocl_to_sql(&age_ocl, &age_context, &model);
     println!("Generated query: {}", sql);
     /*
     // query to get total number of doctors at my hospital

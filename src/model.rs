@@ -211,7 +211,14 @@ impl Model {
     }
 
     pub fn is_subclass_of(&self, child: &ClassName, parent: &ClassName) -> bool {
-        todo!()
+        let mut child = &self.classes[child];
+        while let Some(test) = &child.parent {
+            if test == parent {
+                return true;
+            }
+            child = &self.classes[test];
+        }
+        false
     }
 
     fn base_class<'a>(&'a self, class: &'a Class) -> Option<(&'a ClassName, &'a Class)> {
