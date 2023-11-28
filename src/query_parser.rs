@@ -45,8 +45,6 @@ fn parse_token(i: &mut Peekable<impl Iterator<Item = char>>) -> Option<Token> {
         }
     }
 
-    dbg!(&tok);
-
     Some(tok)
 }
 
@@ -157,7 +155,6 @@ fn parse_expr(
     ctx: &mut OclContext,
     model: &Model,
 ) -> OclNode {
-    println!("parsing expr with stop_token = {:?}", &stop_token);
     let mut cur_node = parse_base_case(text, ctx, model);
 
     loop {

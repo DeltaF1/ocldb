@@ -164,6 +164,12 @@ pub struct Enum {
     members: Vec<String>,
 }
 
+impl Enum {
+    pub fn index_of(&self, member: &str) -> Option<usize> {
+        self.members.iter().position(|s| s == member)
+    }
+}
+
 #[derive(Debug)]
 pub struct Model {
     pub classes: HashMap<ClassName, Class>,
@@ -202,6 +208,10 @@ impl Model {
 
     pub(crate) fn table_of(&self, name: &ClassName) -> SqlIdentifier {
         canonicalize::class_table_name(self.island_of(name))
+    }
+
+    pub fn is_subclass_of(&self, child: &ClassName, parent: &ClassName) -> bool {
+        todo!()
     }
 
     fn base_class<'a>(&'a self, class: &'a Class) -> Option<(&'a ClassName, &'a Class)> {

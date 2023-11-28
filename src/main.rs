@@ -7,7 +7,7 @@ use std::rc::Rc;
 use model::canonicalize;
 
 use crate::model::ClassBuilder;
-use crate::SqlTree::test_tree;
+use crate::SqlTree::{ocl_to_sql, test_tree};
 
 mod model;
 
@@ -65,6 +65,12 @@ impl From<&str> for SqlIdentifier {
     }
 }
 
+impl From<String> for SqlIdentifier {
+    fn from(value: String) -> Self {
+        SqlIdentifier(value)
+    }
+}
+
 impl SqlIdentifier {
     fn into_inner(self) -> String {
         self.0
@@ -117,7 +123,7 @@ impl FieldName {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Primitive {
     Real,
     Integer,
@@ -127,10 +133,19 @@ pub enum Primitive {
 }
 
 // TODO: Mark whether the type is single or a collection
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OclType {
     Primitive(Primitive),
     Class(ClassName),
+}
+
+impl OclType {
+    fn class_name(&self) -> &ClassName {
+        match self {
+            OclType::Primitive(_) => panic!("No class name for primitive"),
+            OclType::Class(name) => name,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -331,7 +346,6 @@ type Join = ((TableAlias, ColumnName), (TableAlias, ColumnName));
 // TODO: Typestate this so a base_table and output are always added
 
 mod SqlTree {
-
     enum Constant {
         Real(f64),
         Integer(i64),
@@ -380,8 +394,22 @@ mod SqlTree {
         }
     }
 
+    enum ColumnSpec {
+        Star,
+        Named(ColumnName),
+    }
+
+    impl std::fmt::Display for ColumnSpec {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                ColumnSpec::Star => write!(f, "*"),
+                ColumnSpec::Named(col) => write!(f, "{}", col.escape()),
+            }
+        }
+    }
+
     enum Expr {
-        Field(TableAlias, ColumnName),
+        Field(TableAlias, ColumnSpec),
         Constant(Constant),
         Parameter(String),
     }
@@ -389,7 +417,7 @@ mod SqlTree {
     impl std::fmt::Display for Expr {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
             match self {
-                Expr::Field(table, column) => write!(f, "{}.{}", table.escape(), column.escape()),
+                Expr::Field(table, column) => write!(f, "{}.{}", table.escape(), column),
                 Expr::Constant(c) => write!(f, "'{c}'"),
                 Expr::Parameter(name) => write!(f, "${}", name),
             }
@@ -416,35 +444,152 @@ mod SqlTree {
         }
     }
 
-    use std::{fmt::Display, num::NonZeroUsize};
+    use std::{collections::HashMap, fmt::Display, num::NonZeroUsize};
 
-    use crate::{ColumnName, TableAlias, TableName};
+    use crate::{
+        model::canonicalize, typecheck, Associativity, ClassName, ColumnName, OclBool, OclContext,
+        OclNode, OclType, Primitive, Resolution, TableAlias, TableName,
+    };
 
     // FIXME this should include a field descriptor too
     enum Output {
-        Table(TableAlias),
+        Table(Expr),
         Count(TableAlias),
     }
 
     impl Display for Output {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                Output::Table(alias) => write!(f, "{}", alias.escape()),
+                Output::Table(e) => write!(f, "{}", e),
                 Output::Count(alias) => write!(f, "COUNT({}.id)", alias.escape()),
             }
         }
     }
 
-    struct Query {
+    impl InProgressQuery {
+        fn to_count(self, table: TableAlias, columnspec: ColumnName) -> Query {
+            Query {
+                output: Output::Count(table),
+                body: Some(self.body.unwrap()),
+                r#where: self.r#where,
+                limit: None,
+            }
+        }
+
+        fn to_select_table(self, table: TableAlias, column: ColumnSpec) -> Query {
+            self.to_select(Expr::Field(table, column))
+        }
+
+        fn to_select(self, e: Expr) -> Query {
+            if matches!(e, Expr::Field(_, _)) {
+                assert!(self.body.is_some());
+            }
+            Query {
+                output: Output::Table(e),
+                body: self.body,
+                r#where: self.r#where,
+                limit: None,
+            }
+        }
+
+        fn to_limited(
+            self,
+            table: TableAlias,
+            columnspec: ColumnSpec,
+            limit: NonZeroUsize,
+        ) -> Query {
+            Query {
+                output: Output::Table(Expr::Field(table, columnspec)),
+                body: Some(self.body.unwrap()),
+                r#where: self.r#where,
+                limit: Some(limit),
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Aliases {
+        tables: HashMap<TableName, usize>,
+    }
+
+    use std::fmt::Write;
+    impl Aliases {
+        fn new_alias(&mut self, name: TableName) -> TableAlias {
+            let n = self.tables.entry(name.clone()).or_default();
+            *n += 1;
+            let mut name = name.into_inner();
+            write!(name, "_{}", n);
+            TableAlias::from(name)
+        }
+    }
+
+    #[derive(Default)]
+    struct InProgressQuery {
+        body: Option<Body>,
+        r#where: Option<BoolCondition>,
+        limit: Option<NonZeroUsize>,
+    }
+
+    impl InProgressQuery {
+        fn add_base_table(&mut self, name: TableName, aliases: &mut Aliases) -> TableAlias {
+            assert!(self.body.is_none());
+
+            let alias = aliases.new_alias(name.clone());
+
+            self.body = Some(Body::Named(Table::Table(name), alias.clone()));
+            alias
+        }
+
+        fn add_joined_table(
+            &mut self,
+            from: (TableAlias, ColumnName),
+            to: (TableName, ColumnName),
+            aliases: &mut Aliases,
+        ) -> TableAlias {
+            let new_alias = aliases.new_alias(to.0.clone());
+            let condition = BoolCondition::Equal(
+                Expr::Field(from.0, ColumnSpec::Named(from.1)),
+                Expr::Field(new_alias.clone(), ColumnSpec::Named(to.1)),
+            );
+
+            match self.body.take() {
+                Some(body) => {
+                    let b = Body::Join(
+                        Box::new(body),
+                        Box::new(Body::Named(Table::Table(to.0), new_alias.clone())),
+                        condition,
+                    );
+                    self.body = Some(b);
+                }
+                None => panic!("No base table"),
+            }
+            new_alias
+        }
+
+        fn add_where(&mut self, cond: BoolCondition) {
+            self.r#where = match self.r#where.take() {
+                Some(existing_cond) => {
+                    Some(BoolCondition::And(Box::new(existing_cond), Box::new(cond)))
+                }
+                None => Some(cond),
+            }
+        }
+    }
+
+    pub struct Query {
         output: Output,
-        body: Body,
+        body: Option<Body>,
         r#where: Option<BoolCondition>,
         limit: Option<NonZeroUsize>,
     }
 
     impl Display for Query {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "SELECT {} FROM {}", self.output, self.body)?;
+            write!(f, "SELECT {}", self.output)?;
+
+            if let Some(body) = &self.body {
+                write!(f, "\n FROM {}", body)?;
+            }
 
             if let Some(w) = &self.r#where {
                 write!(f, "\n WHERE {w}")?;
@@ -495,14 +640,354 @@ mod SqlTree {
         }
     }
 
+    enum NodeType {
+        Base,
+        NonBase,
+    }
+
+    fn is_base(node: &OclNode) -> bool {
+        match node {
+            OclNode::IterVariable(_) => true,
+            OclNode::ContextVariable(_) => true,
+            OclNode::AllInstances(_) => true,
+            OclNode::Navigate(_, _) => todo!(),
+            OclNode::PrimitiveField(_, _) => todo!(),
+            OclNode::Select(_, _, _) => todo!(),
+            OclNode::Count(_) => todo!(),
+            OclNode::Bool(_) => todo!(),
+            OclNode::EnumMember(_, _) => true,
+        }
+    }
+
+    struct QueryState {
+        aliases: HashMap<String, usize>,
+        bindings: HashMap<
+            String,
+            (
+                /* TODO: Put the OclType into the parse tree */ OclType,
+                TableAlias,
+            ),
+        >,
+        upcasts: HashMap<(TableAlias, ClassName), TableAlias>, // Keep track of the alias of the upcast table for the given table/type
+    }
+
+    // TODO: Just pass in an immutable list of context arg types
+    pub(crate) fn ocl_to_sql(
+        ocl: &OclNode,
+        mut context: OclContext,
+        model: &crate::model::Model,
+    ) -> Query {
+        let mut aliases = Aliases::default();
+        // match the top-level node to determine output
+        match ocl {
+            OclNode::IterVariable(_) => panic!("Invalid OCL query"),
+            OclNode::ContextVariable(varname) => {
+                let (typ, _) = context.resolve(varname).unwrap_context();
+
+                match typ {
+                    OclType::Class(_) => todo!("build_query"),
+                    OclType::Primitive(p) => Query {
+                        output: Output::Table(Expr::Parameter(varname.to_string())),
+                        body: None,
+                        r#where: None,
+                        limit: None,
+                    },
+                }
+            }
+            OclNode::AllInstances(_) => todo!(),
+            OclNode::Navigate(_, _) => {
+                let in_progress = InProgressQuery::default();
+                let (in_progress, table) =
+                    build_query(ocl, model, in_progress, &mut context, &mut aliases);
+
+                in_progress.to_select_table(table, todo!())
+            }
+            OclNode::PrimitiveField(node, field) => {
+                let in_progress = InProgressQuery::default();
+                let (in_progress, table) =
+                    build_query(ocl, model, in_progress, &mut context, &mut aliases);
+                let OclType::Class(class) = typecheck(node, &context, model) else {
+                    panic!("Tried to get primitive field of non-class object")
+                };
+                let columnspec = canonicalize::column_name(class, field);
+                in_progress.to_select_table(table, ColumnSpec::Named(columnspec))
+            }
+            OclNode::Select(_, _, _) => {
+                let in_progress = InProgressQuery::default();
+                let (in_progress, table) =
+                    build_query(ocl, model, in_progress, &mut context, &mut aliases);
+
+                in_progress.to_select_table(table, ColumnSpec::Star)
+            }
+            OclNode::Count(node) => {
+                let in_progress = InProgressQuery::default();
+                let (in_progress, table) =
+                    build_query(node, model, in_progress, &mut context, &mut aliases);
+
+                let columnspec = "*".into();
+                in_progress.to_count(table, columnspec)
+            }
+            OclNode::Bool(_) => todo!(),
+            OclNode::EnumMember(name, member) => {
+                let Some(constant) = model.enums[name].index_of(member) else {
+                    panic!("Invalid field {member:?} for enum {name}")
+                };
+                Query {
+                    output: Output::Table(Expr::Constant(Constant::Integer(constant as i64))),
+                    body: None,
+                    r#where: None,
+                    limit: None,
+                }
+            }
+        }
+    }
+
+    fn build_query(
+        ocl: &OclNode,
+        model: &crate::model::Model,
+        mut sql: InProgressQuery,
+        context: &mut OclContext,
+        aliases: &mut Aliases,
+    ) -> (InProgressQuery, TableAlias) {
+        match ocl {
+            OclNode::IterVariable(name) => {
+                let var = context.resolve(name);
+                (sql, var.unwrap_iter().1.unwrap())
+
+                // if the variable is an upcast, add a join onto the base class
+            }
+            OclNode::ContextVariable(name) => {
+                let Resolution::ContextVar((typ, binding)) = context.resolve(name) else {
+                    panic!("Unknown variable")
+                };
+
+                let alias = match binding {
+                    Some(alias) => alias,
+                    None => {
+                        let tbl = match typ {
+                            OclType::Class(ident) => ident,
+                            _ => todo!("Non-object variables"),
+                        };
+
+                        let alias = sql.add_base_table(
+                            crate::model::canonicalize::class_table_name(&tbl),
+                            aliases,
+                        );
+
+                        sql.add_where(BoolCondition::Equal(
+                            Expr::Field(alias.clone(), ColumnSpec::Named("id".into())),
+                            Expr::Parameter(name.clone()),
+                        ));
+
+                        context.resolve_mut(name).unwrap().1 = Some(alias.clone());
+
+                        alias
+                    }
+                };
+
+                (sql, alias)
+            }
+            OclNode::AllInstances(tbl) => {
+                let alias = sql.add_base_table(model.table_of(tbl), aliases);
+                (sql, alias)
+            }
+            OclNode::Select(iter_vars, node, condition) => {
+                // TODO: Collect the types of the Iter variable
+                // if the type is not a supertype then error
+                // Otherwise the upcasting should Just Work™
+                // Downcasting is not allowed
+                let (sql, top_of_stack_alias) = build_query(node, model, sql, context, aliases);
+
+                // TODO: Break out this binding process into its own method
+
+                if iter_vars.len() > 1 {
+                    todo!("Bind multiple iter vars")
+                }
+
+                let mut vars_with_aliases = HashMap::new();
+                let output_typ = typecheck(node, context, model);
+                for (varname, vartype) in iter_vars {
+                    if vartype != &output_typ {
+                        let output_class = output_typ.class_name();
+                        let var_class = vartype.class_name();
+                        assert!(
+                            model.is_subclass_of(output_class, var_class),
+                            "Can't upcast {output_typ:?} into {vartype:?}"
+                        );
+                    }
+
+                    // TODO: If there are multiple vars, need to add a new copy of the alias
+                    let binding = Some(top_of_stack_alias.clone());
+
+                    vars_with_aliases.insert(varname.clone(), (vartype.clone(), binding));
+                }
+
+                context.push_iter(vars_with_aliases);
+
+                //
+
+                //set current iter collection to the output_tbl
+
+                if let OclNode::Bool(bool) = &**condition {
+                    match &**bool {
+                        OclBool::LessThan(node1, node2) => {
+                            let left_expr: Expr;
+                            let right_expr: Expr;
+
+                            let lhs = if let OclNode::PrimitiveField(node, field) = node1 {
+                                let typ: OclType;
+                                let ret_sql;
+
+                                let alias = if let OclNode::IterVariable(varname) = &**node {
+                                    let (ty, alias) = context.resolve(varname).unwrap_iter();
+                                    typ = ty;
+                                    ret_sql = sql;
+                                    alias.unwrap()
+                                } else {
+                                    let alias;
+                                    (ret_sql, alias) =
+                                        build_query(node, model, sql, context, aliases);
+                                    typ = typecheck(node, context, model);
+                                    alias
+                                };
+
+                                let OclType::Class(class) = typ else { panic!() };
+                                //todo!("need to check if field is on parent class");
+                                let columnspec = ColumnSpec::Named(
+                                    crate::model::canonicalize::column_name(class, field),
+                                );
+                                left_expr = Expr::Field(alias, columnspec);
+                                ret_sql
+                            } else {
+                                todo!()
+                            };
+
+                            let rhs = if let OclNode::PrimitiveField(node, field) = node2 {
+                                let typ: OclType;
+                                let ret_sql;
+                                // TODO: If node == IterVar, don't build_query just reuse the alias
+                                let alias = if let OclNode::IterVariable(varname) = &**node {
+                                    let (ty, alias) = context.resolve(varname).unwrap_iter();
+                                    typ = ty;
+                                    ret_sql = lhs;
+                                    alias.unwrap()
+                                } else {
+                                    let alias;
+                                    (ret_sql, alias) =
+                                        build_query(node, model, lhs, context, aliases);
+                                    typ = typecheck(node, context, model);
+                                    alias
+                                };
+
+                                let OclType::Class(class) = typ else { panic!() };
+                                let columnspec = ColumnSpec::Named(
+                                    crate::model::canonicalize::column_name(class, field),
+                                );
+                                right_expr = Expr::Field(alias, columnspec);
+                                ret_sql
+                            } else {
+                                todo!()
+                            };
+
+                            let mut sql = rhs;
+                            sql.add_where(BoolCondition::LessThan(left_expr, right_expr));
+                            return (sql, top_of_stack_alias);
+                        }
+                        _ => todo!(),
+                    }
+                } else {
+                    assert!(matches!(
+                        typecheck(condition, context, model),
+                        OclType::Primitive(Primitive::Boolean)
+                    ));
+                    todo!("We need to do some magic joining and then WHERE result.bool_field = 1");
+                }
+                context.pop_iter();
+                todo!()
+            }
+            OclNode::Count(node) => {
+                let (sql, table_name) = build_query(node, model, sql, context, aliases);
+                let subquery = sql.to_count(table_name.clone(), "id".into());
+                let alias = aliases.new_alias(table_name);
+                (
+                    InProgressQuery {
+                        body: Some(Body::Named(Table::Query(Box::new(subquery)), alias.clone())),
+                        r#where: None,
+                        limit: None,
+                    },
+                    alias,
+                )
+            }
+            OclNode::PrimitiveField(node, navigation) => {
+                todo!("Return type for queries that produce primitives")
+            }
+            OclNode::Navigate(node, navigation) => {
+                // TODO: peek at node. If it's a Navigate, then we can potentially avoid an
+                // intermediate table if the structure goes
+                //      1                 1
+                // ... ---> intermediate ---> this table
+                //
+                //       1
+                // ... <---> this table
+
+                let (mut sql, prev_alias) = build_query(node, model, sql, context, aliases);
+                let prev_type = typecheck(node, context, model);
+                let OclType::Class(prev_type) = prev_type else {
+                    panic!("Tried to navigate on a primitive")
+                };
+                // TODO: check for primitive field navigations
+
+                let assoc = &model.classes[&prev_type].associations[navigation];
+
+                // TODO: If navigating to a class contained within the same SQL table (i.e. navigation is a true 1-1 association), just return prev_alias
+                match assoc.associativity {
+                    Associativity::One => {
+                        let new_type = assoc.target.clone();
+                        let new_table = model.table_of(&assoc.target);
+                        let field_name = canonicalize::column_name(prev_type, &navigation);
+                        let new_alias = sql.add_joined_table(
+                            (prev_alias, field_name),
+                            (new_table, "id".into()),
+                            aliases,
+                        );
+                        (sql, new_alias)
+                    }
+                    Associativity::Many => {
+                        let rev = assoc.reverse();
+                        let new_type = assoc.target.clone();
+                        let new_table = model.table_of(&assoc.target);
+                        let field_name =
+                            canonicalize::column_name(new_type.clone(), &rev.navigation);
+                        let new_alias = match rev.associativity {
+                            Associativity::One => sql.add_joined_table(
+                                (prev_alias, "id".into()),
+                                (new_table, field_name),
+                                aliases,
+                            ),
+                            x => todo!("{:?}", x),
+                        };
+                        (sql, new_alias)
+                    }
+                    _ => todo!(),
+                }
+
+                //add table
+                //add join to prev_alias
+                //if it's a many-many then add additional target table and join
+            }
+            OclNode::Bool(_) => todo!(),
+            OclNode::EnumMember(_, _) => unreachable!(),
+        }
+    }
+
     pub fn test_tree() {
         let tree = Query {
-            output: Output::Table("patients1".into()),
-            body: Body::Join(
+            output: Output::Table(Expr::Field("patients1".into(), ColumnSpec::Star)),
+            body: Some(Body::Join(
                 Box::new(Body::Named(
                     Table::Query(Box::new(Query {
-                        output: Output::Table("doctors2".into()),
-                        body: Body::Join(
+                        output: Output::Table(Expr::Field("doctors2".into(), ColumnSpec::Star)),
+                        body: Some(Body::Join(
                             Box::new(Body::Join(
                                 Box::new(Body::Join(
                                     Box::new(Body::Join(
@@ -515,8 +1000,14 @@ mod SqlTree {
                                             "doctors1".into(),
                                         )),
                                         BoolCondition::Equal(
-                                            Expr::Field("doctors1".into(), "hospital".into()),
-                                            Expr::Field("self".into(), "hospital".into()),
+                                            Expr::Field(
+                                                "doctors1".into(),
+                                                ColumnSpec::Named("hospital".into()),
+                                            ),
+                                            Expr::Field(
+                                                "self".into(),
+                                                ColumnSpec::Named("hospital".into()),
+                                            ),
                                         ),
                                     )),
                                     Box::new(Body::Named(
@@ -524,8 +1015,14 @@ mod SqlTree {
                                         "doctors1_person".into(),
                                     )),
                                     BoolCondition::Equal(
-                                        Expr::Field("doctors1".into(), "id".into()),
-                                        Expr::Field("doctors1_person".into(), "id".into()),
+                                        Expr::Field(
+                                            "doctors1".into(),
+                                            ColumnSpec::Named("id".into()),
+                                        ),
+                                        Expr::Field(
+                                            "doctors1_person".into(),
+                                            ColumnSpec::Named("id".into()),
+                                        ),
                                     ),
                                 )),
                                 Box::new(Body::Named(
@@ -533,8 +1030,11 @@ mod SqlTree {
                                     "surgery_assoc".into(),
                                 )),
                                 BoolCondition::Equal(
-                                    Expr::Field("doctors1".into(), "id".into()),
-                                    Expr::Field("surgery_assoc".into(), "doctor".into()),
+                                    Expr::Field("doctors1".into(), ColumnSpec::Named("id".into())),
+                                    Expr::Field(
+                                        "surgery_assoc".into(),
+                                        ColumnSpec::Named("doctor".into()),
+                                    ),
                                 ),
                             )),
                             Box::new(Body::Named(
@@ -542,28 +1042,46 @@ mod SqlTree {
                                 "doctors2".into(),
                             )),
                             BoolCondition::Equal(
-                                Expr::Field("doctors2".into(), "id".into()),
-                                Expr::Field("surgery_assoc".into(), "doctor".into()),
+                                Expr::Field("doctors2".into(), ColumnSpec::Named("id".into())),
+                                Expr::Field(
+                                    "surgery_assoc".into(),
+                                    ColumnSpec::Named("doctor".into()),
+                                ),
                             ),
-                        ),
+                        )),
                         r#where: Some(BoolCondition::And(
                             Box::new(BoolCondition::Equal(
-                                Expr::Field("self".into(), "id".into()),
+                                Expr::Field("self".into(), ColumnSpec::Named("id".into())),
                                 Expr::Parameter("self".into()),
                             )),
                             Box::new(BoolCondition::And(
                                 Box::new(BoolCondition::Equal(
-                                    Expr::Field("doctors1_person".into(), "name".into()),
+                                    Expr::Field(
+                                        "doctors1_person".into(),
+                                        ColumnSpec::Named("name".into()),
+                                    ),
                                     Expr::Constant("Dave".into()),
                                 )),
                                 Box::new(BoolCondition::And(
                                     Box::new(BoolCondition::NotEqual(
-                                        Expr::Field("doctors1".into(), "id".into()),
-                                        Expr::Field("doctors2".into(), "id".into()),
+                                        Expr::Field(
+                                            "doctors1".into(),
+                                            ColumnSpec::Named("id".into()),
+                                        ),
+                                        Expr::Field(
+                                            "doctors2".into(),
+                                            ColumnSpec::Named("id".into()),
+                                        ),
                                     )),
                                     Box::new(BoolCondition::Equal(
-                                        Expr::Field("doctors1".into(), "hospital".into()),
-                                        Expr::Field("doctors2".into(), "hospital".into()),
+                                        Expr::Field(
+                                            "doctors1".into(),
+                                            ColumnSpec::Named("hospital".into()),
+                                        ),
+                                        Expr::Field(
+                                            "doctors2".into(),
+                                            ColumnSpec::Named("hospital".into()),
+                                        ),
                                     )),
                                 )),
                             )),
@@ -577,10 +1095,10 @@ mod SqlTree {
                     "patients1".into(),
                 )),
                 BoolCondition::Equal(
-                    Expr::Field("doctors3".into(), "hospital".into()),
-                    Expr::Field("patients1".into(), "hospital".into()),
+                    Expr::Field("doctors3".into(), ColumnSpec::Named("hospital".into())),
+                    Expr::Field("patients1".into(), ColumnSpec::Named("hospital".into())),
                 ),
-            ),
+            )),
             r#where: None,
             limit: None,
         };
@@ -818,6 +1336,20 @@ impl OclContext {
         }
     }
 
+    fn resolve_mut(&mut self, name: &str) -> Option<&mut Context> {
+        for iter in self.iterator_vars.iter_mut().rev() {
+            if let Some(t) = iter.get_mut(name) {
+                return Some(t);
+            }
+        }
+
+        if let Some(c) = self.parameters.get_mut(name) {
+            Some(c)
+        } else {
+            None
+        }
+    }
+
     fn push_iter(&mut self, hm: HashMap<String, Context>) {
         self.iterator_vars.push(hm);
     }
@@ -976,8 +1508,6 @@ fn build_query(
 }
 
 fn main() {
-    test_tree();
-    panic!();
     let model = {
         let mut f = File::open("hospital.schema").unwrap();
         let mut s = String::new();
@@ -993,62 +1523,19 @@ fn main() {
         "bikeshed self: Doctor in: self.hospital.doctors->size()",
         &model,
     );
-    // let mut context = OclContext::with_context(HashMap::from([(
-    //     "self".to_string(),
-    //     (OclType::Class("Doctor".into()), None),
-    // )]));
-    // let ocl = OclNode::Count(
-    //     OclNode::Navigate(
-    //         OclNode::Navigate(
-    //             OclNode::ContextVariable("self".into()).into(),
-    //             "hospital".into(),
-    //         )
-    //         .into(),
-    //         "doctors".into(),
-    //     )
-    //     .into(),
-    // );
     println!("OCL tree: {ocl:?}");
 
-    let mut sql = SQLQueryBuilder::default();
+    let sql = SqlTree::ocl_to_sql(&ocl, context, &model);
 
-    build_query(&ocl, &model, &mut sql, &mut context);
-    println!("Generated query: {}", sql.to_sqlite3());
+    println!("Generated query: {}", sql);
 
-    let mut sql = SQLQueryBuilder::default();
-    // query: self.hospital.doctors->select(o: Person | o.age < self.age)
+    println!("query: self.hospital.doctors->select(o: Person | o.age < self.age)");
     let (age_ocl, mut age_context) = query_parser::parse_full_query(
         "bikeshed self: Patient in: 
         self.hospital.doctors->select(o: Person | o.age < self.age)
     ",
         &model,
     );
-    // let mut age_context = OclContext::with_context(HashMap::from([(
-    //     "self".into(),
-    //     (OclType::Class("Doctor".into()), None),
-    // )]));
-
-    // let age_ocl = OclNode::Select(
-    //     HashMap::from([("p".into(), OclType::Class("Person".into()))]),
-    //     OclNode::Navigate(
-    //         OclNode::Navigate(
-    //             OclNode::ContextVariable("self".into()).into(),
-    //             "hospital".into(),
-    //         )
-    //         .into(),
-    //         "doctors".into(),
-    //     )
-    //     .into(),
-    //     Box::new(
-    //         todo!(), /*OclBool::LessThan(
-    //                      OclNode::Navigate(Box::new(OclNode::IterVariable("p".into())), "age".into()),
-    //                      OclNode::Navigate(
-    //                          Box::new(OclNode::ContextVariable("self".into())),
-    //                          "age".into(),
-    //                      ),
-    //                  )*/
-    //     ),
-    // );
     /*
 
     Where = BoolCondition::And(Equals(Field(Doctor0, id), Parameter(self)), BoolCondition::And(BoolCondition::Lt(Field(Doctor1, age), Field(Doctor2, age))))
@@ -1086,9 +1573,8 @@ fn main() {
         Patient0.id = ?self AND
         Doctor1.age < Patient0.age;
      */
-    dbg!(&age_ocl);
-    build_query(&age_ocl, &model, &mut sql, &mut age_context);
-    println!("Generated query: {}", sql.to_sqlite3());
+    let sql = SqlTree::ocl_to_sql(&age_ocl, age_context, &model);
+    println!("Generated query: {}", sql);
     /*
     // query to get total number of doctors at my hospital
     context some doctor // Type + id
