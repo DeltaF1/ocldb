@@ -670,7 +670,7 @@ impl<'c> ModelBuilder<'c> {
         let keys = islands.keys().map(Clone::clone).collect::<Vec<_>>();
         while changed {
             changed = false;
-            for (key) in &keys {
+            for key in &keys {
                 let current_root = &islands[key];
                 let next_root: &ClassName = &islands[current_root];
                 dbg!(key, &current_root, &next_root);

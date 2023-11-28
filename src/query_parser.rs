@@ -22,7 +22,7 @@ fn parse_token(i: &mut Peekable<impl Iterator<Item = char>>) -> Option<Token> {
     let mut tok = String::new();
     tok.push(c);
 
-    if c.is_alphabetic() {
+    if c.is_alphanumeric() {
         while i.peek().cloned().is_some_and(char::is_alphanumeric) {
             match i.next() {
                 Some(c) => tok.push(c),
@@ -219,30 +219,38 @@ fn parse_expr(
                     }
                 }
             }
-            "->" => match text.next_token().as_str() {
-                "select" => {
-                    assert_eq!(text.next_token(), "(");
-                    ctx.push_iter(parse_iter_var_list(text));
-                    // FIXME: Non statically known bool exprs can maybe exist? e.g. object.bool_field
-                    let select_clause = parse_expr(text, Some(")".into()), ctx, model);
-                    assert!(matches!(
-                        typecheck(&select_clause, model),
-                        OclType::Primitive(Primitive::Boolean)
-                    ));
-                    let vars = ctx.pop_iter();
-                    cur_node = OclNode::Select(
-                        vars.unwrap().clone(),
-                        Box::new(cur_node),
-                        Box::new(select_clause),
-                    );
+            "->" => {
+                let op = text.next_token();
+                match op.as_str() {
+                    "select" => {
+                        assert_eq!(text.next_token(), "(");
+                        ctx.push_iter(parse_iter_var_list(text));
+                        // FIXME: Non statically known bool exprs can maybe exist? e.g. object.bool_field
+                        let select_clause = parse_expr(text, Some(")".into()), ctx, model);
+                        assert!(matches!(
+                            typecheck(&select_clause, model),
+                            OclType::Primitive(Primitive::Boolean)
+                        ));
+                        let vars = ctx.pop_iter();
+                        cur_node = OclNode::Select(
+                            vars.unwrap().clone(),
+                            Box::new(cur_node),
+                            Box::new(select_clause),
+                        );
+                    }
+                    "size" => {
+                        assert_eq!(text.next_token(), "(");
+                        assert_eq!(text.next_token(), ")");
+                        cur_node = OclNode::Count(Box::new(cur_node));
+                    }
+                    "first" => {
+                        assert_eq!(text.next_token(), "(");
+                        assert_eq!(text.next_token(), ")");
+                        cur_node = OclNode::First(Box::new(cur_node));
+                    }
+                    _ => panic!("Unrecognized collection operation"),
                 }
-                "size" => {
-                    assert_eq!(text.next_token(), "(");
-                    assert_eq!(text.next_token(), ")");
-                    cur_node = OclNode::Count(Box::new(cur_node));
-                }
-                _ => panic!("Unrecognized collection operation"),
-            },
+            }
             "-" | "+" | "=" | "<>" | "<" | ">" => {
                 let bin = next;
                 let rhs = parse_expr(text, stop_token.clone(), ctx, model);

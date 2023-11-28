@@ -634,7 +634,7 @@ mod sql_tree {
                 let (in_progress, table) =
                     build_query(ocl, model, in_progress, &mut context, &mut aliases);
 
-                in_progress.to_select_table(table, todo!())
+                in_progress.to_select_table(table, ColumnSpec::Star)
             }
             OclNode::PrimitiveField(node, field) => {
                 let in_progress = InProgressQuery::default();
@@ -652,6 +652,12 @@ mod sql_tree {
                     build_query(ocl, model, in_progress, &mut context, &mut aliases);
 
                 in_progress.to_select_table(table, ColumnSpec::Star)
+            }
+            OclNode::First(node) => {
+                let in_progress = InProgressQuery::default();
+                let (in_progress, table) =
+                    build_query(node, model, in_progress, &mut context, &mut aliases);
+                in_progress.to_limited(table, ColumnSpec::Star, NonZeroUsize::new(1).unwrap())
             }
             OclNode::Count(node) => {
                 let in_progress = InProgressQuery::default();
@@ -842,6 +848,7 @@ mod sql_tree {
                 context.pop_iter();
                 todo!()
             }
+            OclNode::First(_) => todo!(),
             OclNode::Count(node) => {
                 let (sql, table_name) = build_query(node, model, sql, context, aliases);
                 let subquery = sql.to_count(table_name.clone(), "id".into());
@@ -955,8 +962,9 @@ enum OclNode {
     Navigate(Box<OclNode>, FieldName),       // -> Output::Object | Output::Bag
     PrimitiveField(Box<OclNode>, FieldName), // -> Output::Field
     Select(HashMap<String, OclType>, Box<OclNode>, Box<OclNode>), // Output::Bag
-    Count(Box<OclNode>),                     // Output::Count
-    Bool(Box<OclBool>),                      // Output::Bool
+    First(Box<OclNode>),
+    Count(Box<OclNode>), // Output::Count
+    Bool(Box<OclBool>),  // Output::Bool
     Literal(OclLiteral),
     EnumMember(EnumName, MemberName), // Output::Constant
 }
@@ -993,6 +1001,7 @@ fn typecheck(ocl: &OclNode, model: &model::Model) -> OclType {
             }
         }
         OclNode::Select(_, node, _) => typecheck(node, model),
+        OclNode::First(node) => typecheck(node, model),
         OclNode::Count(_) => OclType::Primitive(Primitive::Integer),
         OclNode::Bool(_) => OclType::Primitive(Primitive::Boolean),
         OclNode::Literal(literal) => OclType::Primitive(match literal {
