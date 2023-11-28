@@ -1,13 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
-use std::marker::PhantomData;
-use std::rc::Rc;
-
-use model::canonicalize;
-
-use crate::model::ClassBuilder;
-use crate::SqlTree::{ocl_to_sql, test_tree};
 
 mod model;
 
@@ -270,87 +263,11 @@ type TableAlias = SqlIdentifier;
 type TableName = SqlIdentifier;
 type ColumnName = SqlIdentifier;
 
-#[non_exhaustive]
-enum Output {
-    PrimitiveField(TableAlias, ColumnName),
-    Class(TableAlias), //TODO: assert that returned set has 1 row
-    Count(TableAlias, ColumnName),
-    Bag(TableAlias),
-    // TODO: Further aggregates
-}
-
-impl std::fmt::Display for Output {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self {
-            Output::PrimitiveField(table, column) => {
-                write!(f, "{}.{}", table.escape(), column.escape())
-            }
-            Output::Class(table) => write!(f, "{}.*", table.escape()),
-            Output::Count(table, column) => {
-                write!(f, "COUNT({}.{})", table.escape(), column.escape())
-            }
-            Output::Bag(table) => write!(f, "{}.*", table.escape()),
-            _ => todo!(),
-        }
-    }
-}
-
-enum Constant {
-    Real(f64),
-    Integer(i64),
-    String(String),
-    Boolean(bool),
-}
-
-enum Expr {
-    SubQuery(()),
-    Bool(Box<BoolCondition>),
-    Field(TableAlias, ColumnName),
-    Constant(Constant),
-    SqlParameter(String),
-}
-
-impl std::fmt::Display for Expr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self {
-            Expr::SubQuery(()) => todo!(),
-            Expr::Bool(cond) => write!(f, "{cond}"),
-            Expr::Field(table, column) => write!(f, "{}.{}", table.escape(), column.escape()),
-            Expr::Constant(c) => todo!(),
-            Expr::SqlParameter(name) => write!(f, "${}", name),
-        }
-    }
-}
-
-enum BoolCondition {
-    And(Box<BoolCondition>, Box<BoolCondition>),
-    Equal(Expr, Expr),
-    Gt(Expr, Expr),
-    Lt(Expr, Expr),
-}
-
-impl std::fmt::Display for BoolCondition {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self {
-            BoolCondition::And(a, b) => write!(f, "{a} AND {b}"),
-            BoolCondition::Equal(a, b) => write!(f, "{a} = {b}"),
-            BoolCondition::Gt(a, b) => write!(f, "{a} > {b}"),
-            BoolCondition::Lt(a, b) => write!(f, "{a} < {b}"),
-        }
-    }
-}
-
-// TODO: Just stuff these all in the Where clause?
-type Join = ((TableAlias, ColumnName), (TableAlias, ColumnName));
-
-// TODO: Typestate this so a base_table and output are always added
-
-mod SqlTree {
+mod sql_tree {
     enum Constant {
         Real(f64),
         Integer(i64),
         String(String),
-        Boolean(bool),
     }
 
     impl Display for Constant {
@@ -359,7 +276,6 @@ mod SqlTree {
                 Constant::Real(_) => todo!(),
                 Constant::Integer(_) => todo!(),
                 Constant::String(s) => write!(f, "{s}"), //FIXME: Prevent SQL injection
-                Constant::Boolean(_) => todo!(),
             }
         }
     }
@@ -378,12 +294,6 @@ mod SqlTree {
 
     impl From<String> for Constant {
         fn from(value: String) -> Self {
-            todo!()
-        }
-    }
-
-    impl From<bool> for Constant {
-        fn from(value: bool) -> Self {
             todo!()
         }
     }
@@ -518,7 +428,7 @@ mod SqlTree {
             let n = self.tables.entry(name.clone()).or_default();
             *n += 1;
             let mut name = name.into_inner();
-            write!(name, "_{}", n);
+            write!(name, "_{}", n).unwrap();
             TableAlias::from(name)
         }
     }
@@ -974,228 +884,12 @@ mod SqlTree {
             }
             OclNode::Bool(_) => todo!(),
             OclNode::EnumMember(_, _) => unreachable!(),
+            OclNode::Literal(_) => todo!(),
         }
     }
 
-    pub fn test_tree() {
-        let tree = Query {
-            output: Output::Table(Expr::Field("patients1".into(), ColumnSpec::Star)),
-            body: Some(Body::Join(
-                Box::new(Body::Named(
-                    Table::Query(Box::new(Query {
-                        output: Output::Table(Expr::Field("doctors2".into(), ColumnSpec::Star)),
-                        body: Some(Body::Join(
-                            Box::new(Body::Join(
-                                Box::new(Body::Join(
-                                    Box::new(Body::Join(
-                                        Box::new(Body::Named(
-                                            Table::Table("Doctor".into()),
-                                            "self".into(),
-                                        )),
-                                        Box::new(Body::Named(
-                                            Table::Table("Doctor".into()),
-                                            "doctors1".into(),
-                                        )),
-                                        BoolCondition::Equal(
-                                            Expr::Field(
-                                                "doctors1".into(),
-                                                ColumnSpec::Named("hospital".into()),
-                                            ),
-                                            Expr::Field(
-                                                "self".into(),
-                                                ColumnSpec::Named("hospital".into()),
-                                            ),
-                                        ),
-                                    )),
-                                    Box::new(Body::Named(
-                                        Table::Table("Person".into()),
-                                        "doctors1_person".into(),
-                                    )),
-                                    BoolCondition::Equal(
-                                        Expr::Field(
-                                            "doctors1".into(),
-                                            ColumnSpec::Named("id".into()),
-                                        ),
-                                        Expr::Field(
-                                            "doctors1_person".into(),
-                                            ColumnSpec::Named("id".into()),
-                                        ),
-                                    ),
-                                )),
-                                Box::new(Body::Named(
-                                    Table::Table("SurgeriesDoctorsAssoc".into()),
-                                    "surgery_assoc".into(),
-                                )),
-                                BoolCondition::Equal(
-                                    Expr::Field("doctors1".into(), ColumnSpec::Named("id".into())),
-                                    Expr::Field(
-                                        "surgery_assoc".into(),
-                                        ColumnSpec::Named("doctor".into()),
-                                    ),
-                                ),
-                            )),
-                            Box::new(Body::Named(
-                                Table::Table("Doctors".into()),
-                                "doctors2".into(),
-                            )),
-                            BoolCondition::Equal(
-                                Expr::Field("doctors2".into(), ColumnSpec::Named("id".into())),
-                                Expr::Field(
-                                    "surgery_assoc".into(),
-                                    ColumnSpec::Named("doctor".into()),
-                                ),
-                            ),
-                        )),
-                        r#where: Some(BoolCondition::And(
-                            Box::new(BoolCondition::Equal(
-                                Expr::Field("self".into(), ColumnSpec::Named("id".into())),
-                                Expr::Parameter("self".into()),
-                            )),
-                            Box::new(BoolCondition::And(
-                                Box::new(BoolCondition::Equal(
-                                    Expr::Field(
-                                        "doctors1_person".into(),
-                                        ColumnSpec::Named("name".into()),
-                                    ),
-                                    Expr::Constant("Dave".into()),
-                                )),
-                                Box::new(BoolCondition::And(
-                                    Box::new(BoolCondition::NotEqual(
-                                        Expr::Field(
-                                            "doctors1".into(),
-                                            ColumnSpec::Named("id".into()),
-                                        ),
-                                        Expr::Field(
-                                            "doctors2".into(),
-                                            ColumnSpec::Named("id".into()),
-                                        ),
-                                    )),
-                                    Box::new(BoolCondition::Equal(
-                                        Expr::Field(
-                                            "doctors1".into(),
-                                            ColumnSpec::Named("hospital".into()),
-                                        ),
-                                        Expr::Field(
-                                            "doctors2".into(),
-                                            ColumnSpec::Named("hospital".into()),
-                                        ),
-                                    )),
-                                )),
-                            )),
-                        )),
-                        limit: Some(NonZeroUsize::new(1).unwrap()),
-                    })),
-                    "doctors3".into(),
-                )),
-                Box::new(Body::Named(
-                    Table::Table("Patient".into()),
-                    "patients1".into(),
-                )),
-                BoolCondition::Equal(
-                    Expr::Field("doctors3".into(), ColumnSpec::Named("hospital".into())),
-                    Expr::Field("patients1".into(), ColumnSpec::Named("hospital".into())),
-                ),
-            )),
-            r#where: None,
-            limit: None,
-        };
-        println!("{tree}");
-    }
-}
-
-#[derive(Default)]
-struct SQLQueryBuilder {
-    base_table: Option<TableAlias>,
-    alias_n: HashMap<TableName, usize>,
-    tables: HashMap<TableAlias, TableName>,
-    joins: Vec<Join>,
-    r#where: Option<BoolCondition>,
-    output: Option<Output>,
-}
-
-impl SQLQueryBuilder {
-    fn to_sqlite3(&self) -> String {
-        let output = self.output.as_ref().expect("No output!").to_string();
-        let tbls = self
-            .joins
-            .iter()
-            .map(|((from_alias, from_col), (new_alias, new_col))| {
-                let from_alias = from_alias.escape();
-                let from_col = from_col.escape();
-                let new_tbl = self.tables[new_alias].escape();
-                let new_alias = new_alias.escape();
-                let new_col = new_col.escape();
-                format!("\nJOIN {new_tbl} AS {new_alias} ON {from_alias}.{from_col} = {new_alias}.{new_col}")
-            })
-            .collect::<String>();
-        let base = self.base_table.clone().unwrap().escape();
-        let base_table_name = self.tables[self.base_table.as_ref().unwrap()].escape();
-        let base = format!("{base_table_name} AS {base}");
-        let mut query = format!("SELECT {output} FROM {base}{tbls}");
-        if let Some(w) = &self.r#where {
-            query += &format!(" WHERE {w}");
-        }
-        query += ";";
-        query
-    }
-
-    fn add_table(&mut self, name: TableName) -> TableAlias {
-        let n = self.alias_n.entry(name.clone()).or_insert(0);
-        let alias: TableAlias = format!("{}{n}", name.0.to_lowercase()).as_str().into();
-        self.tables.insert(alias.clone(), name);
-        *n += 1;
-        alias
-    }
-
-    fn add_base_table(&mut self, name: TableName) -> TableAlias {
-        assert!(self.base_table.is_none());
-
-        self.base_table = Some(self.add_table(name));
-        self.base_table.clone().unwrap()
-    }
-
-    fn add_joined_table(
-        &mut self,
-        from: (TableAlias, ColumnName),
-        to: (TableName, ColumnName),
-    ) -> TableAlias {
-        let new_alias = self.add_table(to.0);
-        self.joins.push((from, (new_alias.clone(), to.1)));
-        new_alias
-    }
-
-    fn add_where(&mut self, cond: BoolCondition) {
-        self.r#where = match self.r#where.take() {
-            Some(existing_cond) => {
-                Some(BoolCondition::And(Box::new(existing_cond), Box::new(cond)))
-            }
-            None => Some(cond),
-        }
-    }
-}
-
-fn test() {
-    // query: Patient.allInstances->select(p: Patient | p.hospital.doctors->includes(p.emergency_contact))
-    //
-    // Select(AllInstances(Patient),
-    // let mut sql = SQLQueryBuilder::default();
-    // sql.
-    // sql.output = Output::Bag("patient1");
-
-    // query: self.hospital.doctors->size()
-
-    let mut sql = SQLQueryBuilder::default();
-    let s = sql.add_base_table("self".into());
-    let doctors = sql.add_joined_table(
-        (s.clone(), "hospital".into()),
-        ("Doctor_class".into(), "hospital".into()),
-    );
-    sql.add_where(BoolCondition::Equal(
-        Expr::Field(s.clone(), "id".into()),
-        Expr::SqlParameter("self".to_string()),
-    ));
-    sql.output = Some(Output::Count(doctors.clone(), "id".into()));
-    println!("hand built: {}", sql.to_sqlite3());
+    #[cfg(test)]
+    mod test;
 }
 
 /*
@@ -1378,45 +1072,18 @@ fn main() {
     );
     println!("OCL tree: {ocl:?}");
 
-    let sql = SqlTree::ocl_to_sql(&ocl, &context, &model);
+    let sql = sql_tree::ocl_to_sql(&ocl, &context, &model);
 
     println!("Generated query: {}", sql);
 
     println!("query: self.hospital.doctors->select(o: Person | o.age < self.age)");
-    let (age_ocl, mut age_context) = query_parser::parse_full_query(
+    let (age_ocl, age_context) = query_parser::parse_full_query(
         "bikeshed self: Patient in: 
         self.hospital.doctors->select(o: Person | o.age < self.age)
     ",
         &model,
     );
     /*
-
-    Where = BoolCondition::And(Equals(Field(Doctor0, id), Parameter(self)), BoolCondition::And(BoolCondition::Lt(Field(Doctor1, age), Field(Doctor2, age))))
-
-
-
-
-    Output::Class(
-        "Doctor1",
-        Join(
-            Join(
-                Join(
-                    Named("Patient_class", "Patient0"),
-                    Named("Person_class", "Person0"),
-                    ("Person0", "id", "Patient0", "id")
-                ),
-                Named("Doctor_class", "Doctor1"),
-                ("Patient0", "hospital", "Doctor1", "hospital")
-            )
-            Named("Person_class", "Person1"),
-            ("Person1", "id", "Doctor1", "id")
-        ),
-        And(
-            Equal(Field("Patient0", "id"), Parameter("self")),
-            LessThan(Field("Doctor1", "age"), Field("Patient0", "age"))
-        )
-    )
-
     SELECT Doctor1 FROM
         Patient_class AS Patient0
         JOIN Person_class AS Person0 ON Person0.id = Patient0.id
@@ -1426,7 +1093,7 @@ fn main() {
         Patient0.id = ?self AND
         Doctor1.age < Patient0.age;
      */
-    let sql = SqlTree::ocl_to_sql(&age_ocl, &age_context, &model);
+    let sql = sql_tree::ocl_to_sql(&age_ocl, &age_context, &model);
     println!("Generated query: {}", sql);
     /*
     // query to get total number of doctors at my hospital
@@ -1487,7 +1154,6 @@ fn main() {
     /*
     SELECT <Patient fields> FROM Patient_class JOIN Doctor_class ON Patient_class.hospital = Doctor_class.hospital WHERE Patient_class.emergency_contact = Doctor_class.id;
      */
-    test();
 }
 
 /*

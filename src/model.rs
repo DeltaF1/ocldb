@@ -6,12 +6,7 @@ use crate::OclType;
 use crate::Primitive;
 use crate::SqlIdentifier;
 use crate::TableName;
-use std::cmp::max;
 use std::cmp::min;
-use std::collections::BTreeMap;
-use std::fs::canonicalize;
-use std::fs::File;
-use std::io::Read;
 use std::rc::Rc;
 use std::{
     collections::{HashMap, HashSet},
