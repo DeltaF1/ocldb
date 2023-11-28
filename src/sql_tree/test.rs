@@ -2,11 +2,11 @@ use crate::sql_tree::*;
 
 pub fn test_tree() {
     let tree = Query {
-        output: Output::Table(Expr::Field("patients1".into(), ColumnSpec::Star)),
+        output: Output::Select(Selectable::Field("patients1".into(), ColumnSpec::Star)),
         body: Some(Body::Join(
             Box::new(Body::Named(
                 Table::Query(Box::new(Query {
-                    output: Output::Table(Expr::Field("doctors2".into(), ColumnSpec::Star)),
+                    output: Output::Select(Selectable::Field("doctors2".into(), ColumnSpec::Star)),
                     body: Some(Body::Join(
                         Box::new(Body::Join(
                             Box::new(Body::Join(

@@ -390,25 +390,43 @@ mod sql_tree {
         OclType, Primitive, Resolution, TableAlias, TableName,
     };
 
+    enum Selectable {
+        Field(TableAlias, ColumnSpec),
+        Constant(Constant),
+        Parameter(String),
+        Star,
+    }
+
+    impl Display for Selectable {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Selectable::Field(tbl, field) => write!(f, "{}.{field}", tbl.escape()),
+                Selectable::Constant(c) => write!(f, "{c}"),
+                Selectable::Parameter(p) => write!(f, "${p}"),
+                Selectable::Star => write!(f, "*"),
+            }
+        }
+    }
+
     // FIXME this should include a field descriptor too
     enum Output {
-        Table(Expr),
-        Count(TableAlias),
+        Select(Selectable),
+        Count(Selectable),
     }
 
     impl Display for Output {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                Output::Table(e) => write!(f, "{}", e),
-                Output::Count(alias) => write!(f, "COUNT({}.id)", alias.escape()),
+                Output::Select(e) => write!(f, "{}", e),
+                Output::Count(e) => write!(f, "COUNT({})", e),
             }
         }
     }
 
     impl InProgressQuery {
-        fn to_count(self, table: TableAlias, columnspec: ColumnName) -> Query {
+        fn to_count(self, s: Selectable) -> Query {
             Query {
-                output: Output::Count(table),
+                output: Output::Count(s),
                 body: Some(self.body.unwrap()),
                 r#where: self.r#where,
                 limit: None,
@@ -416,15 +434,15 @@ mod sql_tree {
         }
 
         fn to_select_table(self, table: TableAlias, column: ColumnSpec) -> Query {
-            self.to_select(Expr::Field(table, column))
+            self.to_select(Selectable::Field(table, column))
         }
 
-        fn to_select(self, e: Expr) -> Query {
-            if matches!(e, Expr::Field(_, _)) {
+        fn to_select(self, e: Selectable) -> Query {
+            if matches!(e, Selectable::Field(_, _)) {
                 assert!(self.body.is_some());
             }
             Query {
-                output: Output::Table(e),
+                output: Output::Select(e),
                 body: self.body,
                 r#where: self.r#where,
                 limit: None,
@@ -438,7 +456,7 @@ mod sql_tree {
             limit: NonZeroUsize,
         ) -> Query {
             Query {
-                output: Output::Table(Expr::Field(table, columnspec)),
+                output: Output::Select(Selectable::Field(table, columnspec)),
                 body: Some(self.body.unwrap()),
                 r#where: self.r#where,
                 limit: Some(limit),
@@ -622,13 +640,21 @@ mod sql_tree {
             OclNode::ContextVariable(varname, typ) => match typ {
                 OclType::Class(_) => todo!("build_query"),
                 OclType::Primitive(p) => Query {
-                    output: Output::Table(Expr::Parameter(varname.to_string())),
+                    output: Output::Select(Selectable::Parameter(varname.to_string())),
                     body: None,
                     r#where: None,
                     limit: None,
                 },
             },
-            OclNode::AllInstances(_) => todo!(),
+            OclNode::AllInstances(class) => Query {
+                output: Output::Select(Selectable::Star),
+                body: Some(Body::Named(
+                    Table::Table(model.table_of(class)),
+                    "out".into(),
+                )),
+                r#where: None,
+                limit: None,
+            },
             OclNode::Navigate(_, _) => {
                 let in_progress = InProgressQuery::default();
                 let (in_progress, table) =
@@ -664,12 +690,14 @@ mod sql_tree {
                 let (in_progress, table) =
                     build_query(node, model, in_progress, &mut context, &mut aliases);
 
-                let columnspec = "*".into();
-                in_progress.to_count(table, columnspec)
+                in_progress.to_count(Selectable::Field(table, ColumnSpec::Star))
             }
-            OclNode::Bool(b) => todo!(),
+            OclNode::Bool(b) => {
+                let in_progress: InProgressQuery = todo!("parse_expr_part");
+                in_progress.to_count(Selectable::Star)
+            }
             OclNode::Literal(literal) => Query {
-                output: Output::Table(Expr::Constant(literal.clone().into())),
+                output: Output::Select(Selectable::Constant(literal.clone().into())),
                 body: None,
                 r#where: None,
                 limit: None,
@@ -679,7 +707,9 @@ mod sql_tree {
                     panic!("Invalid field {member:?} for enum {name}")
                 };
                 Query {
-                    output: Output::Table(Expr::Constant(Constant::Integer(constant as i64))),
+                    output: Output::Select(Selectable::Constant(Constant::Integer(
+                        constant as i64,
+                    ))),
                     body: None,
                     r#where: None,
                     limit: None,
@@ -846,7 +876,8 @@ mod sql_tree {
             OclNode::First(_) => todo!(),
             OclNode::Count(node) => {
                 let (sql, table_name) = build_query(node, model, sql, context, aliases);
-                let subquery = sql.to_count(table_name.clone(), "id".into());
+                let subquery =
+                    sql.to_count(Selectable::Field(table_name.clone(), ColumnSpec::Star));
                 let alias = aliases.new_alias(table_name);
                 (
                     InProgressQuery {
