@@ -22,8 +22,19 @@ fn parse_token(i: &mut Peekable<impl Iterator<Item = char>>) -> Option<Token> {
     let mut tok = String::new();
     tok.push(c);
 
-    if c.is_alphanumeric() {
-        while i.peek().cloned().is_some_and(char::is_alphanumeric) {
+    if c.is_alphabetic() || c == '_' {
+        while i
+            .peek()
+            .cloned()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            match i.next() {
+                Some(c) => tok.push(c),
+                None => break,
+            }
+        }
+    } else if c.is_numeric() {
+        while i.peek().cloned().is_some_and(char::is_numeric) {
             match i.next() {
                 Some(c) => tok.push(c),
                 None => break,
@@ -31,7 +42,14 @@ fn parse_token(i: &mut Peekable<impl Iterator<Item = char>>) -> Option<Token> {
         }
     } else {
         match c {
-            ':' | '.' | '(' | '|' | ')' | '=' | '>' | '+' => (),
+            ':' => {
+                let next = i.peek();
+                if let Some(':') = next {
+                    i.next();
+                    tok.push(':');
+                }
+            }
+            '.' | '(' | '|' | ')' | '=' | '>' | '+' => (),
             '-' | '<' => {
                 // -> and <>
                 let next = i.peek();
