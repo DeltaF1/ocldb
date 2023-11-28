@@ -125,6 +125,14 @@ pub enum Primitive {
     Enum(String), // TODO Enum(...)
 }
 
+#[derive(Clone, Debug)]
+enum OclLiteral {
+    Real(f64),
+    Integer(i64),
+    String(String),
+    Boolean(bool),
+}
+
 // TODO: Mark whether the type is single or a collection
 #[derive(Clone, Debug, PartialEq)]
 pub enum OclType {
@@ -280,6 +288,17 @@ mod sql_tree {
         }
     }
 
+    impl From<OclLiteral> for Constant {
+        fn from(value: OclLiteral) -> Self {
+            match value {
+                OclLiteral::Real(f) => Constant::Real(f),
+                OclLiteral::Integer(i) => Constant::Integer(i),
+                OclLiteral::String(s) => Constant::String(s),
+                OclLiteral::Boolean(b) => Constant::Integer(b as i64),
+            }
+        }
+    }
+
     impl From<f64> for Constant {
         fn from(value: f64) -> Self {
             Constant::Real(value)
@@ -358,7 +377,7 @@ mod sql_tree {
 
     use crate::{
         model::canonicalize, typecheck, Associativity, ClassName, ColumnName, OclBool, OclContext,
-        OclNode, OclType, Primitive, Resolution, TableAlias, TableName,
+        OclLiteral, OclNode, OclType, Primitive, Resolution, TableAlias, TableName,
     };
 
     // FIXME this should include a field descriptor too
@@ -566,6 +585,7 @@ mod sql_tree {
             OclNode::Count(_) => todo!(),
             OclNode::Bool(_) => todo!(),
             OclNode::EnumMember(_, _) => true,
+            OclNode::Literal(_) => true,
         }
     }
 
@@ -635,6 +655,12 @@ mod sql_tree {
                 in_progress.to_count(table, columnspec)
             }
             OclNode::Bool(_) => todo!(),
+            OclNode::Literal(literal) => Query {
+                output: Output::Table(Expr::Constant(literal.clone().into())),
+                body: None,
+                r#where: None,
+                limit: None,
+            },
             OclNode::EnumMember(name, member) => {
                 let Some(constant) = model.enums[name].index_of(member) else {
                     panic!("Invalid field {member:?} for enum {name}")
@@ -927,7 +953,8 @@ enum OclNode {
     Select(HashMap<String, OclType>, Box<OclNode>, Box<OclNode>), // Output::Bag
     Count(Box<OclNode>),                     // Output::Count
     Bool(Box<OclBool>),                      // Output::Bool
-    EnumMember(EnumName, MemberName),        // Output::Constant
+    Literal(OclLiteral),
+    EnumMember(EnumName, MemberName), // Output::Constant
 }
 
 fn typecheck(ocl: &OclNode, model: &model::Model) -> OclType {
@@ -964,6 +991,12 @@ fn typecheck(ocl: &OclNode, model: &model::Model) -> OclType {
         OclNode::Select(vars, node, _) => typecheck(node, model),
         OclNode::Count(_) => OclType::Primitive(Primitive::Integer),
         OclNode::Bool(_) => OclType::Primitive(Primitive::Boolean),
+        OclNode::Literal(literal) => OclType::Primitive(match literal {
+            OclLiteral::Real(_) => Primitive::Real,
+            OclLiteral::Integer(_) => Primitive::Integer,
+            OclLiteral::String(_) => Primitive::String,
+            OclLiteral::Boolean(_) => Primitive::Boolean,
+        }),
     }
 }
 
