@@ -767,9 +767,54 @@ mod sql_tree {
 
                 context.push_iter(vars_with_aliases);
 
-                //
+                fn parse_expr_part(
+                    node: &OclNode,
+                    model: &model::Model,
+                    sql: InProgressQuery,
+                    context: &mut OclContext,
+                    aliases: &mut Aliases,
+                ) -> (InProgressQuery, Expr) {
+                    let expr;
 
-                //set current iter collection to the output_tbl
+                    let sql = match node {
+                        OclNode::PrimitiveField(node, field) => {
+                            let typ: OclType;
+                            let mut ret_sql;
+                            let alias = if let OclNode::IterVariable(varname, ty) = &**node {
+                                let alias = context.resolve(varname).unwrap_iter();
+                                typ = ty.clone();
+                                ret_sql = sql;
+                                alias
+                            } else {
+                                let alias;
+                                (ret_sql, alias) = build_query(node, model, sql, context, aliases);
+                                typ = typecheck(node, model);
+                                alias
+                            };
+
+                            let OclType::Class(class) = typ else { panic!() };
+
+                            // FIXME: Only add this join if no upcast exists for this alias yet
+                            let (class_table, column_name) =
+                                model.table_of_prim_field(&class, field).unwrap();
+                            let alias = ret_sql.add_joined_table(
+                                (alias.clone(), "id".into()),
+                                (class_table, "id".into()),
+                                aliases,
+                            );
+                            let columnspec = ColumnSpec::Named(column_name);
+                            expr = Expr::Field(alias, columnspec);
+                            ret_sql
+                        }
+                        OclNode::Literal(l) => {
+                            expr = Expr::Constant(l.clone().into());
+                            sql
+                        }
+                        x => todo!("{:?}", x),
+                    };
+
+                    (sql, expr)
+                }
 
                 if let OclNode::Bool(bool) = &**condition {
                     match &**bool {
@@ -777,60 +822,10 @@ mod sql_tree {
                             let left_expr: Expr;
                             let right_expr: Expr;
 
-                            let lhs = if let OclNode::PrimitiveField(node, field) = node1 {
-                                let typ: OclType;
-                                let ret_sql;
-
-                                let alias = if let OclNode::IterVariable(varname, _) = &**node {
-                                    let (ty, alias) = context.resolve(varname).unwrap_iter();
-                                    typ = ty;
-                                    ret_sql = sql;
-                                    alias.unwrap()
-                                } else {
-                                    let alias;
-                                    (ret_sql, alias) =
-                                        build_query(node, model, sql, context, aliases);
-                                    typ = typecheck(node, model);
-                                    alias
-                                };
-
-                                let OclType::Class(class) = typ else { panic!() };
-                                //todo!("need to check if field is on parent class");
-                                let columnspec = ColumnSpec::Named(
-                                    crate::model::canonicalize::column_name(class, field),
-                                );
-                                left_expr = Expr::Field(alias, columnspec);
-                                ret_sql
-                            } else {
-                                todo!()
-                            };
-
-                            let rhs = if let OclNode::PrimitiveField(node, field) = node2 {
-                                let typ: OclType;
-                                let ret_sql;
-                                // TODO: If node == IterVar, don't build_query just reuse the alias
-                                let alias = if let OclNode::IterVariable(varname, _) = &**node {
-                                    let (ty, alias) = context.resolve(varname).unwrap_iter();
-                                    typ = ty;
-                                    ret_sql = lhs;
-                                    alias.unwrap()
-                                } else {
-                                    let alias;
-                                    (ret_sql, alias) =
-                                        build_query(node, model, lhs, context, aliases);
-                                    typ = typecheck(node, model);
-                                    alias
-                                };
-
-                                let OclType::Class(class) = typ else { panic!() };
-                                let columnspec = ColumnSpec::Named(
-                                    crate::model::canonicalize::column_name(class, field),
-                                );
-                                right_expr = Expr::Field(alias, columnspec);
-                                ret_sql
-                            } else {
-                                todo!()
-                            };
+                            let (lhs, left_expr) =
+                                parse_expr_part(node1, model, sql, context, aliases);
+                            let (rhs, right_expr) =
+                                parse_expr_part(node2, model, lhs, context, aliases);
 
                             let mut sql = rhs;
                             sql.add_where(BoolCondition::LessThan(left_expr, right_expr));
