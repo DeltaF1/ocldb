@@ -129,6 +129,9 @@ pub enum Primitive {
 enum OclLiteral {
     Real(f64),
     Integer(i64),
+
+    // FIXME: String literals should not be allowed to discourage OCL injection?
+    #[deprecated]
     String(String),
     Boolean(bool),
 }
@@ -988,7 +991,7 @@ fn typecheck(ocl: &OclNode, model: &model::Model) -> OclType {
                 }
             }
         }
-        OclNode::Select(vars, node, _) => typecheck(node, model),
+        OclNode::Select(_, node, _) => typecheck(node, model),
         OclNode::Count(_) => OclType::Primitive(Primitive::Integer),
         OclNode::Bool(_) => OclType::Primitive(Primitive::Boolean),
         OclNode::Literal(literal) => OclType::Primitive(match literal {

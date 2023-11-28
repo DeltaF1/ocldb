@@ -1,6 +1,8 @@
 use std::{collections::HashMap, iter::Peekable, str::Chars};
 
-use crate::{model::Model, typecheck, ClassName, FieldName, OclBool, OclNode, OclType, Primitive};
+use crate::{
+    model::Model, typecheck, ClassName, FieldName, OclBool, OclLiteral, OclNode, OclType, Primitive,
+};
 
 // TODO: Cow
 type Token = String;
@@ -261,6 +263,10 @@ fn parse_expr(
     cur_node
 }
 
+fn is_numeric(s: &str) -> bool {
+    s.chars().all(char::is_numeric)
+}
+
 fn parse_base_case(
     text: &mut StringIter<impl Iterator<Item = char>>,
     ctx: &mut VariableTypes,
@@ -270,6 +276,22 @@ fn parse_base_case(
     // check to see if it's a literal? For security reasons could disallow string literals to not allow people to make OCL injections
     if name == "(" {
         return parse_expr(text, Some(")".to_string()), ctx, model);
+    } else if is_numeric(&name) {
+        let next = text.peek_next_token();
+        if let Some(".") = next.as_deref() {
+            let mut float = name;
+            float.push_str(&text.next_token());
+            float.push_str(&text.next_token());
+            let float: f64 = float.parse().unwrap();
+            OclNode::Literal(OclLiteral::Real(float))
+        } else {
+            let integer: i64 = name.parse().unwrap();
+            OclNode::Literal(OclLiteral::Integer(integer))
+        }
+    } else if name == "true" {
+        return OclNode::Literal(OclLiteral::Boolean(true));
+    } else if name == "false" {
+        return OclNode::Literal(OclLiteral::Boolean(false));
     } else {
         match ctx.resolve(&name) {
             Resolution::IterVar(c) => OclNode::IterVariable(name, c),
