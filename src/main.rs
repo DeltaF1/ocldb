@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufRead, Read};
+use std::io::{self, BufRead, Read, Write};
 
 mod model;
 
@@ -559,6 +559,7 @@ mod sql_tree {
     }
 
     enum Body {
+        // TODO: Need to have LeftJoin for when the right could be an empty set
         Join(Box<Body>, Box<Body>, BoolCondition),
         Named(Table, TableAlias),
     }
@@ -1132,12 +1133,17 @@ fn main() {
     };
 
     let stdin = io::stdin();
-    for line in stdin.lock().lines() {
-        let line = line.unwrap();
+    let mut buf = String::new();
+    loop {
+        buf.clear();
+        print!("> ");
+        io::stdout().lock().flush().unwrap();
+        stdin.lock().read_line(&mut buf).unwrap();
+        let line = buf.as_str();
 
         if line == "" {
             break;
-        } else if line == ".schema" {
+        } else if line.starts_with(".schema") {
             println!("{}", model.to_schema());
         } else {
             let (ocl, params) = query_parser::parse_full_query(&line, &model);
@@ -1146,6 +1152,30 @@ fn main() {
             println!("{sql}");
         }
     }
+
+    /*
+    Surgery.allInstances->select(s: Surgery | s.head_surgeon.patients->size() < 10)
+
+    SELECT Surgery_class_1.* FROM
+        Surgery_class AS Surgery_class_1
+        JOIN Doctor_class as Doctor_class_1 ON Surgery_class_1.Surgery_head_surgeon = Doctor_class_1.id
+        JOIN Kit_class as Patient_class_1 ON Patient_class_1.Patient_doctor = Doctor_class_1.id
+    GROUP BY Doctor_class_1.id
+    HAVING Count(Patient_class_1.id) < 10;
+     */
+
+    /*
+     Surgery.allInstances->select(s: Surgery | s.head_surgeon.patients->size() < s.normal_doctors->size())
+    SELECT Surgery_class_1.* FROM
+        Surgery_class AS Surgery_class_1
+        JOIN Doctor_class as Doctor_class_1 ON Surgery_class_1.Surgery_head_surgeon = Doctor_class_1.id
+        JOIN Kit_class as Patient_class_1 ON Patient_class_1.Patient_doctor = Doctor_class_1.id
+        JOIN Doctor_class_normal_doctors_Surgery_class_normal_surgeries AS Doctor_class_normal_doctors_Surgery_class_normal_surgeries_1 ON Doctor_class_normal_doctors_Surgery_class_normal_surgeries_1.Doctor_normal_surgeries = Surgery_class_1.id
+        JOIN Doctor_class as Doctor_class_2 ON Doctor_class_2.id = Doctor_class_normal_doctors_Surgery_class_normal_surgeries_1.Surgery_normal_doctors
+    GROUP BY Doctor_class_1.id, Doctor_class_2.id
+    HAVING Count(Patient_class_1.id) < Count(Doctor_class_2.id);
+
+     */
 
     println!("OCL text: \ncontext self: <some external value>\nself.hospital.doctors->size()");
     let (ocl, mut context) = query_parser::parse_full_query(
@@ -1160,9 +1190,7 @@ fn main() {
 
     println!("query: self.hospital.doctors->select(o: Person | o.age < self.age)");
     let (age_ocl, age_context) = query_parser::parse_full_query(
-        "parameters self: Patient in:
-        self.hospital.doctors->select(o: Person | o.age < self.age)
-    ",
+        "parameters self: Patient in: self.hospital.doctors->select(o: Person | o.age < self.age)",
         &model,
     );
 
