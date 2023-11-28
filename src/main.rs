@@ -285,8 +285,8 @@ mod sql_tree {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 Constant::Real(_) => todo!(),
-                Constant::Integer(_) => todo!(),
-                Constant::String(s) => write!(f, "{s}"), //FIXME: Prevent SQL injection
+                Constant::Integer(i) => write!(f, "{i}"),
+                Constant::String(s) => write!(f, "'{s}'"), //FIXME: Prevent SQL injection
             }
         }
     }
@@ -331,6 +331,12 @@ mod sql_tree {
         Named(ColumnName),
     }
 
+    impl ColumnSpec {
+        fn named<S: Into<String>>(s: S) -> ColumnSpec {
+            ColumnSpec::Named(s.into().into())
+        }
+    }
+
     impl std::fmt::Display for ColumnSpec {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
@@ -350,7 +356,7 @@ mod sql_tree {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
             match self {
                 Expr::Field(table, column) => write!(f, "{}.{}", table.escape(), column),
-                Expr::Constant(c) => write!(f, "'{c}'"),
+                Expr::Constant(c) => write!(f, "{c}"),
                 Expr::Parameter(name) => write!(f, "${}", name),
             }
         }
@@ -379,8 +385,9 @@ mod sql_tree {
     use std::{collections::HashMap, fmt::Display, num::NonZeroUsize};
 
     use crate::{
-        model::canonicalize, typecheck, Associativity, ClassName, ColumnName, OclBool, OclContext,
-        OclLiteral, OclNode, OclType, Primitive, Resolution, TableAlias, TableName,
+        model::{self, canonicalize},
+        typecheck, Associativity, ClassName, ColumnName, OclBool, OclContext, OclLiteral, OclNode,
+        OclType, Primitive, Resolution, TableAlias, TableName,
     };
 
     // FIXME this should include a field descriptor too
@@ -582,10 +589,11 @@ mod sql_tree {
             OclNode::IterVariable(_, _) => true,
             OclNode::ContextVariable(_, _) => true,
             OclNode::AllInstances(_) => true,
-            OclNode::Navigate(_, _) => todo!(),
-            OclNode::PrimitiveField(_, _) => todo!(),
-            OclNode::Select(_, _, _) => todo!(),
-            OclNode::Count(_) => todo!(),
+            OclNode::Navigate(_, _) => false,
+            OclNode::PrimitiveField(_, _) => false,
+            OclNode::Select(_, _, _) => false,
+            OclNode::First(_) => false,
+            OclNode::Count(_) => false,
             OclNode::Bool(_) => todo!(),
             OclNode::EnumMember(_, _) => true,
             OclNode::Literal(_) => true,
@@ -606,24 +614,20 @@ mod sql_tree {
     ) -> Query {
         // TODO: Return a Query and a ParameterInfo struct to support non sqlite parameters
         let mut aliases = Aliases::default();
-        let mut context = OclContext::with_parameters(parameters);
-        let mut state: QueryState = Default::default();
+        let mut context = OclContext::default();
+        let mut state = QueryState::default();
         // match the top-level node to determine output
         match ocl {
             OclNode::IterVariable(_, _) => panic!("Invalid OCL query"),
-            OclNode::ContextVariable(varname, _) => {
-                let (typ, _) = context.resolve(varname).unwrap_parameter();
-
-                match typ {
-                    OclType::Class(_) => todo!("build_query"),
-                    OclType::Primitive(p) => Query {
-                        output: Output::Table(Expr::Parameter(varname.to_string())),
-                        body: None,
-                        r#where: None,
-                        limit: None,
-                    },
-                }
-            }
+            OclNode::ContextVariable(varname, typ) => match typ {
+                OclType::Class(_) => todo!("build_query"),
+                OclType::Primitive(p) => Query {
+                    output: Output::Table(Expr::Parameter(varname.to_string())),
+                    body: None,
+                    r#where: None,
+                    limit: None,
+                },
+            },
             OclNode::AllInstances(_) => todo!(),
             OclNode::Navigate(_, _) => {
                 let in_progress = InProgressQuery::default();
@@ -688,18 +692,15 @@ mod sql_tree {
         match ocl {
             OclNode::IterVariable(name, _) => {
                 let var = context.resolve(name);
-                (sql, var.unwrap_iter().1.unwrap())
+                (sql, var.unwrap_iter())
 
                 // if the variable is an upcast, add a join onto the base class
             }
-            OclNode::ContextVariable(name, _) => {
-                let Resolution::Parameter((typ, binding)) = context.resolve(name) else {
-                    panic!("Unknown variable")
-                };
-
-                let alias = match binding {
-                    Some(alias) => alias,
-                    None => {
+            OclNode::ContextVariable(name, typ) => {
+                let alias = match context.resolve(name) {
+                    Resolution::IterVar(_) => unreachable!(),
+                    Resolution::Parameter(alias) => alias,
+                    Resolution::NotFound => {
                         let tbl = match typ {
                             OclType::Class(ident) => ident,
                             _ => todo!("Non-object variables"),
@@ -715,7 +716,7 @@ mod sql_tree {
                             Expr::Parameter(name.clone()),
                         ));
 
-                        context.resolve_mut(name).unwrap().1 = Some(alias.clone());
+                        context.parameters.insert(name.clone(), alias.clone());
 
                         alias
                     }
@@ -753,9 +754,9 @@ mod sql_tree {
                     }
 
                     // TODO: If there are multiple vars, need to add a new copy of the alias
-                    let binding = Some(top_of_stack_alias.clone());
+                    let binding = top_of_stack_alias.clone();
 
-                    vars_with_aliases.insert(varname.clone(), (vartype.clone(), binding));
+                    vars_with_aliases.insert(varname.clone(), binding);
                 }
 
                 context.push_iter(vars_with_aliases);
@@ -1005,7 +1006,7 @@ fn typecheck(ocl: &OclNode, model: &model::Model) -> OclType {
 
 mod query_parser;
 
-type Context = (OclType, Option<TableAlias>);
+type Context = TableAlias;
 
 #[derive(Default)]
 struct OclContext {
@@ -1043,10 +1044,7 @@ impl Resolution {
 
 impl OclContext {
     fn with_parameters(map: &HashMap<String, OclType>) -> Self {
-        let params = map
-            .iter()
-            .map(|(name, typ)| (name.clone(), (typ.clone(), None)))
-            .collect();
+        let params = todo!();
         OclContext {
             parameters: params,
             ..OclContext::default()
