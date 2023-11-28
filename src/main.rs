@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{self, BufRead, Read};
 
 mod model;
 
@@ -1096,8 +1096,21 @@ fn main() {
         model::parse_schema(&s).unwrap()
     };
 
-    dbg!(&model);
-    println!("{}", model.to_schema());
+    let stdin = io::stdin();
+    for line in stdin.lock().lines() {
+        let line = line.unwrap();
+
+        if line == "" {
+            break;
+        } else if line == ".schema" {
+            println!("{}", model.to_schema());
+        } else {
+            let (ocl, params) = query_parser::parse_full_query(&line, &model);
+
+            let sql = sql_tree::ocl_to_sql(&ocl, &params, &model);
+            println!("{sql}");
+        }
+    }
 
     println!("OCL text: \ncontext self: <some external value>\nself.hospital.doctors->size()");
     let (ocl, mut context) = query_parser::parse_full_query(
@@ -1117,52 +1130,15 @@ fn main() {
     ",
         &model,
     );
-    /*
-    SELECT Doctor1 FROM
-        Patient_class AS Patient0
-        JOIN Person_class AS Person0 ON Person0.id = Patient0.id
-        JOIN Doctor_class AS Doctor1 ON Patient0.hospital = Doctor1.hospital
-        JOIN Person_class as Person1 ON Person1.id = Doctor1.id
-    WHERE
-        Patient0.id = ?self AND
-        Doctor1.age < Patient0.age;
-     */
+
     let sql = sql_tree::ocl_to_sql(&age_ocl, &age_context, &model);
     println!("Generated query: {}", sql);
+
+    let q = "1";
+    let (ocl, context) = query_parser::parse_full_query(q, &model);
+    let sql = sql_tree::ocl_to_sql(&ocl, &context, &model);
+    println!("query: {q}\n generated: {sql}");
     /*
-    // query to get total number of doctors at my hospital
-    context some doctor // Type + id
-    query: self.hospital.doctors->size()
-
-    Size(Navigate(Navigate(Object(Doctor, $self), hospital: Hopsital), doctors: *Doctor))
-
-    SELECT COUNT(doctors.id) FROM Doctor_class as self JOIN Doctor_class as doctors ON self.hospital = doctors.hospital WHERE self.id = $self;
-
-    fn Size(set) {
-        sql.output = COUNT(set.tbl_name)
-    }
-
-    SELECT COUNT(doctors.id) FROM doctor_class AS self
-        JOIN doctor_class AS doctors ON doctors.hospital = self.hospital
-        WHERE self.id = $id
-
-    fn upcast(table, supertype) {
-        JOIN supertype_class ON supertype_class.rowid = table.rowid
-    }
-
-    // query to get all doctors at my hospital younger than me
-    context some doctor // Type + id
-    query: hospital.doctors->select(o: Person | o.age < self.age)
-
-    Select(Navigate(Object(Doctor, $id), hospital: Hospital), doctors: *Doctor, LessThan(Navigate(set_elem, age: Integer), Navigate(Object(Doctor, $id), age: Integer)))
-
-    SELECT doctors.* FROM doctor_class AS self
-        JOIN person_class AS self_person ON self_person.rowid = self.rowid
-        JOIN doctor_class AS doctors ON doctors.hospital = self.hospital
-        JOIN person_class AS doctors_person ON person_class.rowid = doctors.rowid
-        WHERE self.rowid = $id
-            AND doctors_person.age < self_person.age
-
     // query for all patients whose emergency contact is a doctor at the same hospital
     context Patient
     query: Patient.allInstances->select(p: Patient | p.hospital.doctors->includes(p.emergency_contact))
