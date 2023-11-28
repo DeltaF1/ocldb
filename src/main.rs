@@ -662,17 +662,10 @@ mod SqlTree {
     #[derive(Default)]
     struct QueryState {
         aliases: HashMap<String, usize>,
-        bindings: HashMap<
-            String,
-            (
-                /* TODO: Put the OclType into the parse tree */ OclType,
-                TableAlias,
-            ),
-        >,
+        bindings: HashMap<String, TableAlias>,
         upcasts: HashMap<(TableAlias, ClassName), TableAlias>, // Keep track of the alias of the upcast table for the given table/type
     }
 
-    // TODO: Just pass in an immutable list of context arg types
     pub(crate) fn ocl_to_sql(
         ocl: &OclNode,
         parameters: &HashMap<String, OclType>,
@@ -686,7 +679,7 @@ mod SqlTree {
         match ocl {
             OclNode::IterVariable(_, _) => panic!("Invalid OCL query"),
             OclNode::ContextVariable(varname, _) => {
-                let (typ, _) = context.resolve(varname).unwrap_context();
+                let (typ, _) = context.resolve(varname).unwrap_parameter();
 
                 match typ {
                     OclType::Class(_) => todo!("build_query"),
@@ -761,7 +754,7 @@ mod SqlTree {
                 // if the variable is an upcast, add a join onto the base class
             }
             OclNode::ContextVariable(name, _) => {
-                let Resolution::ContextVar((typ, binding)) = context.resolve(name) else {
+                let Resolution::Parameter((typ, binding)) = context.resolve(name) else {
                     panic!("Unknown variable")
                 };
 
@@ -1292,7 +1285,7 @@ struct OclContext {
 
 enum Resolution {
     IterVar(Context),
-    ContextVar(Context),
+    Parameter(Context),
     NotFound,
 }
 
@@ -1300,16 +1293,16 @@ impl Resolution {
     fn unwrap_iter(self) -> Context {
         match self {
             Resolution::IterVar(c) => c,
-            Resolution::ContextVar(_) => {
+            Resolution::Parameter(_) => {
                 panic!("Iter variable not found but context var with same name was found")
             }
             Resolution::NotFound => panic!("Iter variable not found"),
         }
     }
 
-    fn unwrap_context(self) -> Context {
+    fn unwrap_parameter(self) -> Context {
         match self {
-            Resolution::ContextVar(c) => c,
+            Resolution::Parameter(c) => c,
             Resolution::IterVar(_) => {
                 panic!("Context variable not found but iter var with same name was found")
             }
@@ -1338,7 +1331,7 @@ impl OclContext {
         }
 
         if let Some(c) = self.parameters.get(name) {
-            Resolution::ContextVar(c.clone())
+            Resolution::Parameter(c.clone())
         } else {
             Resolution::NotFound
         }
