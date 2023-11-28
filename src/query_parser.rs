@@ -113,7 +113,7 @@ fn parse_iter_var_list(
     text: &mut StringIter<impl Iterator<Item = char>>,
 ) -> HashMap<String, OclType> {
     let mut map = HashMap::new();
-    while true {
+    loop {
         let name = text.next_token();
         if name == "|" {
             break;
@@ -149,11 +149,11 @@ pub(crate) fn parse_full_query<'a>(text: &'a str, model: &Model) -> (OclNode, Pa
     let mut text = StringIter::<T>::from_str(text);
     let mut ctx = VariableTypes::default();
 
-    let mut tok = text.peek_next_token().expect("Empty query");
+    let tok = text.peek_next_token().expect("Empty query");
 
     if tok == "bikeshed" {
         drop(text.next_token());
-        while true {
+        loop {
             let name = text.next_token();
             assert_eq!(text.next_token(), ":");
             if name == "in" {
@@ -162,7 +162,7 @@ pub(crate) fn parse_full_query<'a>(text: &'a str, model: &Model) -> (OclNode, Pa
 
             let typ = text.next_token();
 
-            ctx.parameters.insert(name, (parse_type(typ.as_str())));
+            ctx.parameters.insert(name, parse_type(typ.as_str()));
 
             if text
                 .peek_next_token()
@@ -280,9 +280,16 @@ fn parse_base_case(
                     assert_eq!(text.next_token(), ".");
                     assert_eq!(text.next_token(), "allInstances");
                     return OclNode::AllInstances(class_name);
-                } else if let Some(e) = model.enums.get(&name) {
+                } else if let Some(_e) = model.enums.get(&name) {
                     assert_eq!(text.next_token(), "::");
-                    return OclNode::EnumMember(name, text.next_token());
+
+                    let member = text.next_token();
+
+                    assert!(
+                        _e.index_of(&member).is_some(),
+                        "Invalid member {member} for enum {name}"
+                    );
+                    return OclNode::EnumMember(name, member);
                 } else {
                     panic!("Unknown name {name:?}")
                 }
