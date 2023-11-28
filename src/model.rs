@@ -196,9 +196,63 @@ pub(crate) mod canonicalize {
     }
 }
 
+enum SqlAccessType {
+    ThisField(ClassName, FieldName),
+    OtherField(ClassName, FieldName),
+}
+
 impl Model {
     fn island_of<'a>(&'a self, name: &'a ClassName) -> &'a ClassName {
         self.islands.get(name).unwrap_or(name)
+    }
+
+    fn class_with_prim_field<'a>(
+        &'a self,
+        class: &'a ClassName,
+        field: &FieldName,
+    ) -> Option<&'a ClassName> {
+        let mut cur = Some(class);
+
+        while let Some(name) = cur {
+            let class = self.classes.get(name)?;
+            if class.primitive_fields.contains_key(field) {
+                return Some(name);
+            }
+            cur = class.parent.as_ref();
+        }
+        None
+    }
+
+    fn class_with_navigation<'a>(
+        &'a self,
+        class: &'a ClassName,
+        field: &FieldName,
+    ) -> Option<&'a ClassName> {
+        let mut cur = Some(class);
+
+        while let Some(name) = cur {
+            let class = self.classes.get(name)?;
+            if class.associations.contains_key(field)
+                || class.primitive_fields.contains_key(field)
+                || class.primitive_collections.contains_key(field)
+            {
+                return Some(name);
+            }
+            cur = class.parent.as_ref();
+        }
+        None
+    }
+
+    pub(crate) fn table_of_prim_field(
+        &self,
+        class: &ClassName,
+        field: &FieldName,
+    ) -> Option<(SqlIdentifier, SqlIdentifier)> {
+        let class = self.class_with_prim_field(class, field)?;
+
+        let class_table = self.table_of(class);
+        let field_ident = canonicalize::column_name(class.clone(), field);
+        Some((class_table, field_ident))
     }
 
     pub(crate) fn table_of(&self, name: &ClassName) -> SqlIdentifier {

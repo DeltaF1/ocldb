@@ -667,7 +667,7 @@ mod sql_tree {
                 let columnspec = "*".into();
                 in_progress.to_count(table, columnspec)
             }
-            OclNode::Bool(_) => todo!(),
+            OclNode::Bool(b) => todo!(),
             OclNode::Literal(literal) => Query {
                 output: Output::Table(Expr::Constant(literal.clone().into())),
                 body: None,
