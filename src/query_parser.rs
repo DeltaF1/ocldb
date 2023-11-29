@@ -97,6 +97,7 @@ impl<T: Iterator<Item = char>> StringIter<T> {
 struct VariableTypes {
     parameters: HashMap<String, OclType>,
     iterator_vars: Vec<HashMap<String, OclType>>,
+    // TODO: Implicit iterator_vars
 }
 
 enum Resolution {
@@ -131,6 +132,7 @@ impl VariableTypes {
 
 fn parse_iter_var_list(
     text: &mut StringIter<impl Iterator<Item = char>>,
+    collection_type: &OclType,
 ) -> HashMap<String, OclType> {
     let mut map = HashMap::new();
     loop {
@@ -139,9 +141,12 @@ fn parse_iter_var_list(
             break;
         }
 
-        assert_eq!(text.next_token(), ":");
-
-        let typ = parse_type(text.next_token().as_str());
+        let colon = text.peek_next_token().expect("Unexpected EOF");
+        let typ = if colon == ":" {
+            parse_type(text.next_token().as_str())
+        } else {
+            collection_type.clone()
+        };
 
         map.insert(name, typ);
 
@@ -186,7 +191,7 @@ pub(crate) fn parse_full_query<'a>(text: &'a str, model: &Model) -> (OclNode, Pa
 
             if text
                 .peek_next_token()
-                .expect("Unexpected EOF inside bikeshed declaration")
+                .expect("Unexpected EOF inside parameter declaration")
                 == ","
             {
                 drop(text.next_token())
@@ -242,7 +247,8 @@ fn parse_expr(
                 match op.as_str() {
                     "select" => {
                         assert_eq!(text.next_token(), "(");
-                        ctx.push_iter(parse_iter_var_list(text));
+                        // TODO: Peek ahead. If there is no var list, declare an unnameable implicit iter var
+                        ctx.push_iter(parse_iter_var_list(text, &typecheck(&cur_node, model)));
                         // FIXME: Non statically known bool exprs can maybe exist? e.g. object.bool_field
                         let select_clause = parse_expr(text, Some(")".into()), ctx, model);
                         assert!(matches!(
@@ -328,17 +334,21 @@ fn parse_base_case(
                     assert_eq!(text.next_token(), ".");
                     assert_eq!(text.next_token(), "allInstances");
                     return OclNode::AllInstances(class_name);
-                } else if let Some(_e) = model.enums.get(&name) {
+                } else if let Some(e) = model.enums.get(&name) {
                     assert_eq!(text.next_token(), "::");
 
                     let member = text.next_token();
 
                     assert!(
-                        _e.index_of(&member).is_some(),
+                        e.index_of(&member).is_some(),
                         "Invalid member {member} for enum {name}"
                     );
                     return OclNode::EnumMember(name, member);
                 } else {
+                    // TOOD: Add an implicit iter variable here
+                    // The spec is a little tricky here.
+                    // Find the implicit iter variable that matches the next navigation.
+                    // If it's ambiguous then throw an error
                     panic!("Unknown name {name:?}")
                 }
             }

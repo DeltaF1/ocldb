@@ -840,7 +840,7 @@ mod sql_tree {
                     (sql, expr)
                 }
 
-                if let OclNode::Bool(bool) = &**condition {
+                let ret = if let OclNode::Bool(bool) = &**condition {
                     match &**bool {
                         OclBool::LessThan(node1, node2) => {
                             let left_expr: Expr;
@@ -853,7 +853,7 @@ mod sql_tree {
 
                             let mut sql = rhs;
                             sql.add_where(BoolCondition::LessThan(left_expr, right_expr));
-                            return (sql, top_of_stack_alias);
+                            (sql, top_of_stack_alias)
                         }
                         _ => todo!(),
                     }
@@ -863,9 +863,9 @@ mod sql_tree {
                         OclType::Primitive(Primitive::Boolean)
                     ));
                     todo!("We need to do some magic joining and then WHERE result.bool_field = 1");
-                }
+                };
                 context.pop_iter();
-                todo!()
+                ret
             }
             OclNode::First(_) => todo!(),
             OclNode::Count(node) => {
