@@ -126,7 +126,9 @@ impl From<InProgressNavLink<'_>> for NavLink {
     fn from(l: InProgressNavLink) -> Self {
         NavLink {
             target: l.target.0.as_str().into(),
-            navigation: FieldName(l.navigation.unwrap_or_else(|| l.target.0.to_lowercase())),
+            navigation: FieldName::from_string(
+                l.navigation.unwrap_or_else(|| l.target.0.to_lowercase()),
+            ),
             associativity: l.associativity,
         }
     }
@@ -573,7 +575,7 @@ impl<'c> ModelBuilder<'c> {
                             .into_iter()
                             .map(|(name, prim)| {
                                 (
-                                    FieldName(name),
+                                    FieldName::from_string(name),
                                     match prim {
                                         InProgressPrimitive::Boolean => Primitive::Boolean,
                                         InProgressPrimitive::Integer => Primitive::Integer,
@@ -926,7 +928,6 @@ pub fn parse_schema(string: &str) -> Result<Model, pest::error::Error<impl RuleT
                                             x => InProgressPrimitive::Enum(
                                                 class_builder.model_builder.enum_named(x),
                                             ),
-                                            _ => unreachable!(),
                                         };
                                         class_builder.add_field(name, typ);
                                     }
@@ -1045,7 +1046,7 @@ pub fn parse_schema(string: &str) -> Result<Model, pest::error::Error<impl RuleT
         }
     });
     for (class, nav) in implicitly_named {
-        let class_name = ClassName(class);
+        let class_name = ClassName::from_string(class);
         let class = &model.classes[&class_name];
 
         // TODO: This actually isn't necessary because every class must also be declared

@@ -7,15 +7,17 @@ mod model;
 mod name {
     use std::marker::PhantomData;
 
-    #[derive(Debug, Hash, Eq, PartialEq, Clone)]
+    #[derive(Debug, Hash, Eq, PartialEq, Clone, PartialOrd, Ord)]
     pub struct Name<T>(String, PhantomData<T>);
 
     pub trait NameType {}
     pub trait SqlNameType {}
 
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, PartialOrd, Ord)]
     pub struct ClassName;
     impl NameType for ClassName {}
 
+    #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
     pub struct FieldName;
     impl NameType for FieldName {}
 
@@ -66,43 +68,8 @@ mod name {
     }
 }
 
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ClassName(String);
-
-impl From<&str> for ClassName {
-    fn from(s: &str) -> Self {
-        ClassName(s.to_string())
-    }
-}
-
-impl ClassName {
-    fn into_inner(self) -> String {
-        self.0
-    }
-
-    fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub struct FieldName(String);
-
-impl From<&str> for FieldName {
-    fn from(s: &str) -> Self {
-        FieldName(s.to_string())
-    }
-}
-
-impl FieldName {
-    fn into_inner(self) -> String {
-        self.0
-    }
-
-    fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+type ClassName = name::Name<name::ClassName>;
+type FieldName = name::Name<name::FieldName>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Primitive {

@@ -1,8 +1,6 @@
 use std::{collections::HashMap, iter::Peekable, str::Chars};
 
-use crate::{
-    model::Model, typecheck, ClassName, FieldName, OclBool, OclLiteral, OclNode, OclType, Primitive,
-};
+use crate::{model::Model, typecheck, FieldName, OclBool, OclLiteral, OclNode, OclType, Primitive};
 
 // TODO: Cow
 type Token = String;
@@ -163,7 +161,7 @@ fn parse_type(text: &str, /* , model: &Model TODO: validate that the class exist
         "Boolean" => OclType::Primitive(Primitive::Boolean),
         "Real" => OclType::Primitive(Primitive::Real),
         "Integer" => OclType::Primitive(Primitive::Integer),
-        x => OclType::Class(ClassName(x.to_string())),
+        x => OclType::Class(x.into()),
     }
 }
 
@@ -222,7 +220,7 @@ fn parse_expr(
         match next.as_str() {
             "." => {
                 let typ = typecheck(&cur_node, model);
-                let field_name = FieldName(text.next_token());
+                let field_name = FieldName::from_string(text.next_token());
                 match typ {
                     OclType::Primitive(_) => todo!("Can primitive objects have navigations?"),
                     OclType::Class(name) => {
