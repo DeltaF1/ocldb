@@ -7,6 +7,7 @@ mod model;
 mod name {
     use std::marker::PhantomData;
 
+    #[derive(Debug, Hash, Eq, PartialEq, Clone)]
     pub struct Name<T>(String, PhantomData<T>);
 
     pub trait NameType {}
@@ -18,9 +19,20 @@ mod name {
     pub struct FieldName;
     impl NameType for FieldName {}
 
-    pub struct SqlIdentifier;
-    impl NameType for SqlIdentifier {}
-    impl SqlNameType for SqlIdentifier {}
+    #[derive(Clone, Copy)]
+    pub struct TableAlias;
+    impl NameType for TableAlias {}
+    impl SqlNameType for TableAlias {}
+
+    #[derive(Clone, Copy, Hash, Eq, PartialEq)]
+    pub struct TableName;
+    impl NameType for TableName {}
+    impl SqlNameType for TableName {}
+
+    #[derive(Clone, Copy)]
+    pub struct ColumnName;
+    impl NameType for ColumnName {}
+    impl SqlNameType for ColumnName {}
 
     impl<T> From<&str> for Name<T> {
         fn from(s: &str) -> Self {
@@ -28,53 +40,29 @@ mod name {
         }
     }
 
+    impl<T> From<String> for Name<T> {
+        fn from(value: String) -> Self {
+            Name(value, PhantomData)
+        }
+    }
+
     impl<T: NameType> Name<T> {
-        fn from_string(s: String) -> Name<T> {
+        pub(crate) fn from_string(s: String) -> Name<T> {
             Name(s, PhantomData)
         }
-        fn into_inner(self) -> String {
+        pub(crate) fn into_inner(self) -> String {
             self.0
         }
 
-        fn as_str(&self) -> &str {
+        pub fn as_str(&self) -> &str {
             &self.0
         }
     }
 
     impl<T: SqlNameType> Name<T> {
-        fn escape(&self) -> String {
+        pub fn escape(&self) -> String {
             format!("\"{}\"", self.0.replace("\"", "\"\""))
         }
-    }
-}
-
-// TODO: TypeState this to reduce impl redundancy
-#[derive(Debug, Hash, PartialOrd, Ord, Eq, PartialEq, Clone)]
-pub struct SqlIdentifier(String);
-
-impl From<&str> for SqlIdentifier {
-    fn from(s: &str) -> Self {
-        SqlIdentifier(s.to_string())
-    }
-}
-
-impl From<String> for SqlIdentifier {
-    fn from(value: String) -> Self {
-        SqlIdentifier(value)
-    }
-}
-
-impl SqlIdentifier {
-    fn into_inner(self) -> String {
-        self.0
-    }
-
-    fn escape(&self) -> String {
-        format!("\"{}\"", self.0.replace("\"", "\"\""))
-    }
-
-    fn as_str(&self) -> &str {
-        &self.0
     }
 }
 
@@ -270,9 +258,9 @@ update self {
 
  */
 
-type TableAlias = SqlIdentifier;
-type TableName = SqlIdentifier;
-type ColumnName = SqlIdentifier;
+type TableAlias = name::Name<name::TableAlias>;
+type TableName = name::Name<name::TableName>;
+type ColumnName = name::Name<name::ColumnName>;
 
 mod sql_tree {
     enum Constant {
@@ -841,6 +829,11 @@ mod sql_tree {
                             expr = Expr::Constant(l.clone().into());
                             sql
                         }
+                        OclNode::Count(node) => {
+                            let (sql, alias) = build_query(node, model, sql, context, aliases);
+                            expr = todo!("");
+                            sql
+                        }
                         x => todo!("{:?}", x),
                     };
 
@@ -879,7 +872,7 @@ mod sql_tree {
                 let (sql, table_name) = build_query(node, model, sql, context, aliases);
                 let subquery =
                     sql.to_count(Selectable::Field(table_name.clone(), ColumnSpec::Star));
-                let alias = aliases.new_alias(table_name);
+                let alias = aliases.new_alias(todo!("table name from alias"));
                 (
                     InProgressQuery {
                         body: Some(Body::Named(Table::Query(Box::new(subquery)), alias.clone())),

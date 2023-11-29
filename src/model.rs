@@ -4,7 +4,6 @@ use crate::ColumnName;
 use crate::FieldName;
 use crate::OclType;
 use crate::Primitive;
-use crate::SqlIdentifier;
 use crate::TableName;
 use std::cmp::min;
 use std::rc::Rc;
@@ -175,14 +174,14 @@ pub struct Model {
 
 pub(crate) mod canonicalize {
     use super::Association;
-    use crate::{ClassName, FieldName, SqlIdentifier};
+    use crate::{ClassName, ColumnName, FieldName, TableName};
 
-    pub fn class_table_name(class: &ClassName) -> SqlIdentifier {
-        SqlIdentifier(class.clone().into_inner() + "_class")
+    pub fn class_table_name(class: &ClassName) -> TableName {
+        TableName::from_string(class.clone().into_inner() + "_class")
     }
 
-    pub fn many_many_table_name(a: &Association) -> SqlIdentifier {
-        SqlIdentifier(format!(
+    pub fn many_many_table_name(a: &Association) -> TableName {
+        TableName::from_string(format!(
             "{class1}_{field1}_{class2}_{field2}",
             class1 = class_table_name(&a.0.target).as_str(),
             field1 = a.0.navigation.as_str(),
@@ -191,8 +190,8 @@ pub(crate) mod canonicalize {
         ))
     }
 
-    pub fn column_name(class: ClassName, column: &FieldName) -> SqlIdentifier {
-        SqlIdentifier(class.into_inner() + "_" + column.as_str())
+    pub fn column_name(class: ClassName, column: &FieldName) -> ColumnName {
+        ColumnName::from_string(class.into_inner() + "_" + column.as_str())
     }
 }
 
@@ -247,7 +246,7 @@ impl Model {
         &self,
         class: &ClassName,
         field: &FieldName,
-    ) -> Option<(SqlIdentifier, SqlIdentifier)> {
+    ) -> Option<(TableName, ColumnName)> {
         let class = self.class_with_prim_field(class, field)?;
 
         let class_table = self.table_of(class);
@@ -255,7 +254,7 @@ impl Model {
         Some((class_table, field_ident))
     }
 
-    pub(crate) fn table_of(&self, name: &ClassName) -> SqlIdentifier {
+    pub(crate) fn table_of(&self, name: &ClassName) -> TableName {
         canonicalize::class_table_name(self.island_of(name))
     }
 
@@ -400,7 +399,7 @@ enum SQLType {
 // TODO: Need to enable SQLite foreign key support
 // https://www.sqlite.org/foreignkeys.html#fk_enable
 // PRAGMA foreign_keys = ON;
-type Columns = Vec<(SqlIdentifier, SQLType)>;
+type Columns = Vec<(ColumnName, SQLType)>;
 
 enum Constraint {
     Primary(Vec<ColumnName>),
@@ -408,13 +407,13 @@ enum Constraint {
 }
 
 struct Table {
-    name: SqlIdentifier,
+    name: TableName,
     columns: Columns,
     constraints: Vec<Constraint>,
 }
 
 impl Table {
-    fn named(name: SqlIdentifier) -> Table {
+    fn named(name: TableName) -> Table {
         Table {
             name,
             columns: Default::default(),
@@ -435,16 +434,16 @@ impl Table {
 
 #[derive(Default)]
 struct SQLSchemaBuilder {
-    class_tables: HashMap<SqlIdentifier, Table>,
+    class_tables: HashMap<TableName, Table>,
     many_to_many_tables: Vec<Table>,
 }
 
 impl SQLSchemaBuilder {
-    fn class_table(&mut self, name: SqlIdentifier) -> &mut Table {
+    fn class_table(&mut self, name: TableName) -> &mut Table {
         self.class_tables.entry(name.clone()).or_insert_with(|| {
             let mut tbl = Table::named(name);
             tbl.add_constraint(Constraint::Primary(vec!["id".into()]));
-            tbl.add_column(SqlIdentifier("id".to_string()), SQLType::Integer);
+            tbl.add_column("id".into(), SQLType::Integer);
             tbl
         })
     }
@@ -496,7 +495,7 @@ impl SQLSchemaBuilder {
                             "PRIMARY KEY ({})",
                             columns
                                 .iter()
-                                .map(SqlIdentifier::escape)
+                                .map(ColumnName::escape)
                                 .collect::<Vec<_>>()
                                 .join(",")
                         )
