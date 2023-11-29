@@ -141,6 +141,7 @@ fn parse_iter_var_list(
 
         let colon = text.peek_next_token().expect("Unexpected EOF");
         let typ = if colon == ":" {
+            text.next_token();
             parse_type(text.next_token().as_str())
         } else {
             collection_type.clone()
@@ -225,7 +226,10 @@ fn parse_expr(
                     OclType::Basic(_) => todo!("Can primitive objects have navigations?"),
                     OclType::Class(name) => {
                         // TODO: Add a resolve method to Class
-                        let class = &model.classes[&name];
+                        let class = model
+                            .classes
+                            .get(&name)
+                            .unwrap_or_else(|| panic!("unknown class {name:?}"));
                         let field_type = model.field_of(class, &field_name).unwrap_or_else(|| {
                             panic!("No navigation {field_name:?} for class {class:?}")
                         });
