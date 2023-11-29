@@ -1085,22 +1085,37 @@ fn main() {
 
     let stdin = io::stdin();
     let mut buf = String::new();
+    let mut ocl = None;
+    let mut sql = None;
     loop {
         buf.clear();
         print!("> ");
         io::stdout().lock().flush().unwrap();
         stdin.lock().read_line(&mut buf).unwrap();
+        buf.truncate(buf.trim_end().len());
         let line = buf.as_str();
 
         if line == "" {
             break;
-        } else if line.starts_with(".schema") {
+        } else if line == ".schema" {
+            println!("{:#?}", model);
+        } else if line == ".sqlschema" {
             println!("{}", model.to_schema());
+        } else if line == ".ocl" {
+            match &ocl {
+                Some(tree) => println!("{:#?}", tree),
+                None => println!("No OCL has been parsed yet"),
+            }
+        } else if line == ".sql" {
+            match &sql {
+                Some(query) => println!("{}", query),
+                None => println!("No SQL has been generated yet"),
+            }
         } else {
-            let (ocl, params) = query_parser::parse_full_query(&line, &model);
-
-            let sql = sql_tree::ocl_to_sql(&ocl, &params, &model);
-            println!("{sql}");
+            let (generated, params) = query_parser::parse_full_query(&line, &model);
+            ocl = Some(generated);
+            sql = Some(sql_tree::ocl_to_sql(ocl.as_ref().unwrap(), &params, &model));
+            println!("{}", sql.as_ref().unwrap());
         }
     }
 
