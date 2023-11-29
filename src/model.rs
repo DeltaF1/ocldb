@@ -1,9 +1,9 @@
 use crate::Associativity;
+use crate::Basic;
 use crate::ClassName;
 use crate::ColumnName;
 use crate::FieldName;
 use crate::OclType;
-use crate::Primitive;
 use crate::TableName;
 use std::cmp::min;
 use std::rc::Rc;
@@ -110,8 +110,8 @@ impl AssocEnd {
 #[derive(Debug)]
 pub struct Class {
     pub parent: Option<ClassName>,
-    pub primitive_fields: HashMap<FieldName, Primitive>,
-    pub primitive_collections: HashMap<FieldName, (Primitive, Associativity)>,
+    pub primitive_fields: HashMap<FieldName, Basic>,
+    pub primitive_collections: HashMap<FieldName, (Basic, Associativity)>,
     pub associations: HashMap<FieldName, AssocEnd>,
 }
 
@@ -283,7 +283,7 @@ impl Model {
         if let Some(a) = class.associations.get(navigation) {
             Some(OclType::Class(a.target.clone()))
         } else if let Some(p) = class.primitive_fields.get(navigation) {
-            Some(OclType::Primitive(p.clone()))
+            Some(OclType::Basic(p.clone()))
         } else {
             class
                 .parent
@@ -307,11 +307,11 @@ impl Model {
                 t.add_column(
                     canonicalize::column_name(class_name.clone(), field_name),
                     match field_type {
-                        Primitive::Boolean => SQLType::Integer,
-                        Primitive::Real => SQLType::Real,
-                        Primitive::Integer => SQLType::Integer,
-                        Primitive::String => SQLType::Text,
-                        Primitive::Enum(_) => SQLType::Integer,
+                        Basic::Boolean => SQLType::Integer,
+                        Basic::Real => SQLType::Real,
+                        Basic::Integer => SQLType::Integer,
+                        Basic::String => SQLType::Text,
+                        Basic::Enum(_) => SQLType::Integer,
                     },
                 );
             }
@@ -577,12 +577,12 @@ impl<'c> ModelBuilder<'c> {
                                 (
                                     FieldName::from_string(name),
                                     match prim {
-                                        InProgressPrimitive::Boolean => Primitive::Boolean,
-                                        InProgressPrimitive::Integer => Primitive::Integer,
-                                        InProgressPrimitive::Real => Primitive::Real,
-                                        InProgressPrimitive::String => Primitive::String,
+                                        InProgressPrimitive::Boolean => Basic::Boolean,
+                                        InProgressPrimitive::Integer => Basic::Integer,
+                                        InProgressPrimitive::Real => Basic::Real,
+                                        InProgressPrimitive::String => Basic::String,
                                         InProgressPrimitive::Enum(x) => {
-                                            Primitive::Enum(/*FIXME EnumName*/ x.0)
+                                            Basic::Enum(/*FIXME EnumName*/ x.0)
                                         }
                                     },
                                 )

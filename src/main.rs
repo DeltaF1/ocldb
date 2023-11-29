@@ -72,7 +72,7 @@ type ClassName = name::Name<name::ClassName>;
 type FieldName = name::Name<name::FieldName>;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Primitive {
+pub enum Basic {
     Real,
     Integer,
     String,
@@ -92,16 +92,30 @@ enum OclLiteral {
 }
 
 // TODO: Mark whether the type is single or a collection
+/*
+enum Scalar {
+    Primitive(Primitive),
+    Class(ClassName),
+    Enum(EnumName)
+}
+
+enum OclType {
+    Bag(Scalar),
+    Set(Scalar),
+    Sequence(Scalar),
+    Scalar(Scalar)
+}
+ */
 #[derive(Clone, Debug, PartialEq)]
 pub enum OclType {
-    Primitive(Primitive),
+    Basic(Basic),
     Class(ClassName),
 }
 
 impl OclType {
     fn class_name(&self) -> &ClassName {
         match self {
-            OclType::Primitive(_) => panic!("No class name for primitive"),
+            OclType::Basic(_) => panic!("No class name for primitive"),
             OclType::Class(name) => name,
         }
     }
@@ -341,8 +355,8 @@ mod sql_tree {
 
     use crate::{
         model::{self, canonicalize},
-        typecheck, Associativity, ClassName, ColumnName, OclBool, OclContext, OclLiteral, OclNode,
-        OclType, Primitive, Resolution, TableAlias, TableName,
+        typecheck, Associativity, Basic, ClassName, ColumnName, OclBool, OclContext, OclLiteral,
+        OclNode, OclType, Resolution, TableAlias, TableName,
     };
 
     enum Selectable {
@@ -553,18 +567,13 @@ mod sql_tree {
         }
     }
 
-    enum NodeType {
-        Base,
-        NonBase,
-    }
-
     fn is_base(node: &OclNode) -> bool {
         match node {
             OclNode::IterVariable(_, _) => true,
             OclNode::ContextVariable(_, _) => true,
             OclNode::AllInstances(_) => true,
             OclNode::Navigate(_, _) => false,
-            OclNode::PrimitiveField(_, _) => false,
+            OclNode::BasicAttribute(_, _) => false,
             OclNode::Select(_, _, _) => false,
             OclNode::First(_) => false,
             OclNode::Count(_) => false,
@@ -595,7 +604,7 @@ mod sql_tree {
             OclNode::IterVariable(_, _) => panic!("Invalid OCL query"),
             OclNode::ContextVariable(varname, typ) => match typ {
                 OclType::Class(_) => todo!("build_query"),
-                OclType::Primitive(p) => Query {
+                OclType::Basic(p) => Query {
                     output: Output::Select(Selectable::Parameter(varname.to_string())),
                     body: None,
                     r#where: None,
@@ -618,7 +627,7 @@ mod sql_tree {
 
                 in_progress.to_select_table(table, ColumnSpec::Star)
             }
-            OclNode::PrimitiveField(node, field) => {
+            OclNode::BasicAttribute(node, field) => {
                 let in_progress = InProgressQuery::default();
                 let (in_progress, table) =
                     build_query(ocl, model, in_progress, &mut context, &mut aliases);
@@ -763,7 +772,7 @@ mod sql_tree {
                     let expr;
 
                     let sql = match node {
-                        OclNode::PrimitiveField(node, field) => {
+                        OclNode::BasicAttribute(node, field) => {
                             let typ: OclType;
                             let mut ret_sql;
                             let alias = if let OclNode::IterVariable(varname, ty) = &**node {
@@ -827,7 +836,7 @@ mod sql_tree {
                 } else {
                     assert!(matches!(
                         typecheck(condition, model),
-                        OclType::Primitive(Primitive::Boolean)
+                        OclType::Basic(Basic::Boolean)
                     ));
                     todo!("We need to do some magic joining and then WHERE result.bool_field = 1");
                 };
@@ -849,7 +858,7 @@ mod sql_tree {
                     alias,
                 )
             }
-            OclNode::PrimitiveField(node, navigation) => {
+            OclNode::BasicAttribute(node, navigation) => {
                 todo!("Return type for queries that produce primitives")
             }
             OclNode::Navigate(node, navigation) => {
@@ -947,7 +956,7 @@ enum OclNode {
     ContextVariable(String, OclType),        // -> Output::Object
     AllInstances(ClassName),                 // -> Output::Bag
     Navigate(Box<OclNode>, FieldName),       // -> Output::Object | Output::Bag
-    PrimitiveField(Box<OclNode>, FieldName), // -> Output::Field
+    BasicAttribute(Box<OclNode>, FieldName), // -> Output::Field
     Select(HashMap<String, OclType>, Box<OclNode>, Box<OclNode>), // Output::Bag
     First(Box<OclNode>),
     Count(Box<OclNode>), // Output::Count
@@ -958,7 +967,7 @@ enum OclNode {
 
 fn typecheck(ocl: &OclNode, model: &model::Model) -> OclType {
     match ocl {
-        OclNode::EnumMember(enum_name, _) => OclType::Primitive(Primitive::Enum(enum_name.clone())),
+        OclNode::EnumMember(enum_name, _) => OclType::Basic(Basic::Enum(enum_name.clone())),
         OclNode::IterVariable(_, typ) => typ.clone(),
         OclNode::ContextVariable(_, typ) => typ.clone(),
         OclNode::AllInstances(name) => OclType::Class(name.clone()),
@@ -966,36 +975,40 @@ fn typecheck(ocl: &OclNode, model: &model::Model) -> OclType {
             let typ = typecheck(node, model);
 
             match typ {
-                OclType::Primitive(_) => todo!("Figure out if primitives have navigations"),
+                OclType::Basic(_) => todo!("Figure out if primitives have navigations"),
                 OclType::Class(name) => {
                     let class = &model.classes[&name];
                     model.field_of(class, nav).unwrap()
                 }
             }
         }
-        OclNode::PrimitiveField(node, nav) => {
+        OclNode::BasicAttribute(node, nav) => {
             let typ = typecheck(node, model);
 
             match typ {
-                OclType::Primitive(_) => panic!("Can't get the field of a primitive"),
+                OclType::Basic(_) => panic!("Can't get the field of a primitive"),
                 OclType::Class(name) => {
                     let class = &model.classes[&name];
                     match class.primitive_fields.get(nav) {
                         None => todo!("Get parent class fields"),
-                        Some(p) => OclType::Primitive(p.clone()),
+                        Some(p) => OclType::Basic(p.clone()),
                     }
                 }
             }
         }
-        OclNode::Select(_, node, _) => typecheck(node, model),
+        OclNode::Select(_, node, _) =>
+        /* Bag(typecheck(node, model).innertype()) */
+        {
+            typecheck(node, model)
+        }
         OclNode::First(node) => typecheck(node, model),
-        OclNode::Count(_) => OclType::Primitive(Primitive::Integer),
-        OclNode::Bool(_) => OclType::Primitive(Primitive::Boolean),
-        OclNode::Literal(literal) => OclType::Primitive(match literal {
-            OclLiteral::Real(_) => Primitive::Real,
-            OclLiteral::Integer(_) => Primitive::Integer,
-            OclLiteral::String(_) => Primitive::String,
-            OclLiteral::Boolean(_) => Primitive::Boolean,
+        OclNode::Count(_) => OclType::Basic(Basic::Integer),
+        OclNode::Bool(_) => OclType::Basic(Basic::Boolean),
+        OclNode::Literal(literal) => OclType::Basic(match literal {
+            OclLiteral::Real(_) => Basic::Real,
+            OclLiteral::Integer(_) => Basic::Integer,
+            OclLiteral::String(_) => Basic::String,
+            OclLiteral::Boolean(_) => Basic::Boolean,
         }),
     }
 }
@@ -1039,14 +1052,6 @@ impl Resolution {
 }
 
 impl OclContext {
-    fn with_parameters(map: &HashMap<String, OclType>) -> Self {
-        let params = todo!();
-        OclContext {
-            parameters: params,
-            ..OclContext::default()
-        }
-    }
-
     fn resolve(&self, name: &str) -> Resolution {
         for iter in self.iterator_vars.iter().rev() {
             if let Some(t) = iter.get(name) {
@@ -1058,20 +1063,6 @@ impl OclContext {
             Resolution::Parameter(c.clone())
         } else {
             Resolution::NotFound
-        }
-    }
-
-    fn resolve_mut(&mut self, name: &str) -> Option<&mut Context> {
-        for iter in self.iterator_vars.iter_mut().rev() {
-            if let Some(t) = iter.get_mut(name) {
-                return Some(t);
-            }
-        }
-
-        if let Some(c) = self.parameters.get_mut(name) {
-            Some(c)
-        } else {
-            None
         }
     }
 

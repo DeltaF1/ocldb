@@ -1,6 +1,6 @@
 use std::{collections::HashMap, iter::Peekable, str::Chars};
 
-use crate::{model::Model, typecheck, FieldName, OclBool, OclLiteral, OclNode, OclType, Primitive};
+use crate::{model::Model, typecheck, Basic, FieldName, OclBool, OclLiteral, OclNode, OclType};
 
 // TODO: Cow
 type Token = String;
@@ -157,10 +157,10 @@ fn parse_iter_var_list(
 
 fn parse_type(text: &str, /* , model: &Model TODO: validate that the class exists */) -> OclType {
     match text {
-        "String" => OclType::Primitive(Primitive::String),
-        "Boolean" => OclType::Primitive(Primitive::Boolean),
-        "Real" => OclType::Primitive(Primitive::Real),
-        "Integer" => OclType::Primitive(Primitive::Integer),
+        "String" => OclType::Basic(Basic::String),
+        "Boolean" => OclType::Basic(Basic::Boolean),
+        "Real" => OclType::Basic(Basic::Real),
+        "Integer" => OclType::Basic(Basic::Integer),
         x => OclType::Class(x.into()),
     }
 }
@@ -222,7 +222,7 @@ fn parse_expr(
                 let typ = typecheck(&cur_node, model);
                 let field_name = FieldName::from_string(text.next_token());
                 match typ {
-                    OclType::Primitive(_) => todo!("Can primitive objects have navigations?"),
+                    OclType::Basic(_) => todo!("Can primitive objects have navigations?"),
                     OclType::Class(name) => {
                         // TODO: Add a resolve method to Class
                         let class = &model.classes[&name];
@@ -230,8 +230,8 @@ fn parse_expr(
                             panic!("No navigation {field_name:?} for class {class:?}")
                         });
                         match field_type {
-                            OclType::Primitive(_) => {
-                                cur_node = OclNode::PrimitiveField(Box::new(cur_node), field_name)
+                            OclType::Basic(_) => {
+                                cur_node = OclNode::BasicAttribute(Box::new(cur_node), field_name)
                             }
                             OclType::Class(_) => {
                                 cur_node = OclNode::Navigate(Box::new(cur_node), field_name)
@@ -251,7 +251,7 @@ fn parse_expr(
                         let select_clause = parse_expr(text, Some(")".into()), ctx, model);
                         assert!(matches!(
                             typecheck(&select_clause, model),
-                            OclType::Primitive(Primitive::Boolean)
+                            OclType::Basic(Basic::Boolean)
                         ));
                         let vars = ctx.pop_iter();
                         cur_node = OclNode::Select(
